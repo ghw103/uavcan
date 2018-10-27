@@ -8,22 +8,29 @@ PROJECT = uavcan_test_stm32f107
 # Test application
 #
 
-CPPSRC = src/main.cpp src/dummy.cpp
+MAIN ?= main.cpp
+
+CPPSRC = src/$(MAIN)              \
+         src/dummy.cpp            \
+         src/board/board.cpp
 
 #
 # UAVCAN library
 #
 
+export LIBUAVCAN_REPO_ROOT := $(abspath ../../..)
+
 UDEFS = -DUAVCAN_STM32_CHIBIOS=1         \
         -DUAVCAN_STM32_TIMER_NUMBER=6    \
         -DUAVCAN_TINY=1                  \
-        -DUAVCAN_STM32_NUM_IFACES=2
+        -DUAVCAN_STM32_NUM_IFACES=2      \
+        -DUAVCAN_MEM_POOL_BLOCK_SIZE=48
 
-include ../../../libuavcan/include.mk
+include $(LIBUAVCAN_REPO_ROOT)/libuavcan/include.mk
 CPPSRC += $(LIBUAVCAN_SRC)
 UINCDIR += $(LIBUAVCAN_INC)
 
-include ../driver/include.mk
+include $(LIBUAVCAN_REPO_ROOT)/libuavcan_drivers/stm32/driver/include.mk
 CPPSRC += $(LIBUAVCAN_STM32_SRC)
 UINCDIR += $(LIBUAVCAN_STM32_INC)
 
@@ -31,10 +38,15 @@ $(info $(shell $(LIBUAVCAN_DSDLC) $(UAVCAN_DSDL_DIR)))
 UINCDIR += dsdlc_generated
 
 #
-# Platform
+# Git commit hash
 #
 
-CSRC += src/sys/board.c
+GIT_HASH := $(shell git rev-parse --short HEAD)
+UDEFS += -DGIT_HASH=0x$(GIT_HASH)
+
+#
+# Platform
+#
 
 UINCDIR += src/sys
 

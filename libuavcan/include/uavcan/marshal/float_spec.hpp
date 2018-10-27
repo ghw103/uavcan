@@ -2,10 +2,11 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_MARSHAL_FLOAT_SPEC_HPP_INCLUDED
+#define UAVCAN_MARSHAL_FLOAT_SPEC_HPP_INCLUDED
 
 #include <cmath>
-#include <uavcan/stdint.hpp>
+#include <uavcan/std.hpp>
 #include <uavcan/data_type.hpp>
 #include <uavcan/util/templates.hpp>
 #include <uavcan/build_config.hpp>
@@ -15,9 +16,7 @@
 #ifndef UAVCAN_CPP_VERSION
 # error UAVCAN_CPP_VERSION
 #endif
-#if UAVCAN_CPP_VERSION < UAVCAN_CPP11
-# include <math.h>     // Needed for isfinite()
-#else
+#if UAVCAN_CPP_VERSION >= UAVCAN_CPP11
 # include <limits>     // Assuming that in C++11 mode all standard headers are available
 #endif
 
@@ -37,11 +36,24 @@ struct NativeFloatSelector
 
 class UAVCAN_EXPORT IEEE754Converter
 {
-    // TODO: Non-IEEE float support for float32 and float64
-    static uint16_t nativeNonIeeeToHalf(float value);
-    static float halfToNativeNonIeee(uint16_t value);
+    // TODO: Non-IEEE float support
+
+    static uint16_t nativeIeeeToHalf(float value);
+    static float halfToNativeIeee(uint16_t value);
 
     IEEE754Converter();
+
+    template <unsigned BitLen>
+    static void enforceIeee()
+    {
+        /*
+         * Some compilers may have is_iec559 to be defined false despite the fact that IEEE754 is supported.
+         * An acceptable workaround would be to put an #ifdef here.
+         */
+#if UAVCAN_CPP_VERSION >= UAVCAN_CPP11
+        StaticAssert<std::numeric_limits<typename NativeFloatSelector<BitLen>::Type>::is_iec559>::check();
+#endif
+    }
 
 public:
 #if UAVCAN_CPP_VERSION >= UAVCAN_CPP11
@@ -53,6 +65,7 @@ public:
     static typename IntegerSpec<BitLen, SignednessUnsigned, CastModeTruncate>::StorageType
     toIeee(typename NativeFloatSelector<BitLen>::Type value)
     {
+        enforceIeee<BitLen>();
         union
         {
             typename IntegerSpec<BitLen, SignednessUnsigned, CastModeTruncate>::StorageType i;
@@ -67,6 +80,7 @@ public:
     static typename NativeFloatSelector<BitLen>::Type
     toNative(typename IntegerSpec<BitLen, SignednessUnsigned, CastModeTruncate>::StorageType value)
     {
+        enforceIeee<BitLen>();
         union
         {
             typename IntegerSpec<BitLen, SignednessUnsigned, CastModeTruncate>::StorageType i;
@@ -81,13 +95,13 @@ template <>
 inline typename IntegerSpec<16, SignednessUnsigned, CastModeTruncate>::StorageType
 IEEE754Converter::toIeee<16>(typename NativeFloatSelector<16>::Type value)
 {
-    return nativeNonIeeeToHalf(value);
+    return nativeIeeeToHalf(value);
 }
 template <>
 inline typename NativeFloatSelector<16>::Type
 IEEE754Converter::toNative<16>(typename IntegerSpec<16, SignednessUnsigned, CastModeTruncate>::StorageType value)
 {
-    return halfToNativeNonIeee(value);
+    return halfToNativeIeee(value);
 }
 
 
@@ -168,8 +182,7 @@ public:
 private:
     static inline void saturate(StorageType& value)
     {
-        using namespace std;
-        if ((IsExactRepresentation == 0) && isfinite(value))
+        if ((IsExactRepresentation == 0) && isFinite(value))
         {
             if (value > max())
             {
@@ -188,8 +201,7 @@ private:
 
     static inline void truncate(StorageType& value)
     {
-        using namespace std;
-        if ((IsExactRepresentation == 0) && isfinite(value))
+        if ((IsExactRepresentation == 0) && isFinite(value))
         {
             if (value > max())
             {
@@ -222,3 +234,5 @@ public:
 };
 
 }
+
+#endif // UAVCAN_MARSHAL_FLOAT_SPEC_HPP_INCLUDED

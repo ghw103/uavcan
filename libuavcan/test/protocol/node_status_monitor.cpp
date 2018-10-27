@@ -7,35 +7,15 @@
 #include <uavcan/protocol/node_status_provider.hpp>
 #include "helpers.hpp"
 
-static void publishNodeStatus(CanDriverMock& can, uavcan::NodeID node_id, uavcan::uint8_t status_code,
+static void publishNodeStatus(CanDriverMock& can, uavcan::NodeID node_id,
+                              uavcan::uint8_t health, uavcan::uint8_t mode,
                               uavcan::uint32_t uptime_sec, uavcan::TransferID tid)
 {
-    uavcan::StaticTransferBuffer<100> buffer;
-    uavcan::BitStream bitstream(buffer);
-    uavcan::ScalarCodec codec(bitstream);
-
     uavcan::protocol::NodeStatus msg;
-    msg.status_code = status_code;
+    msg.health     = health;
+    msg.mode       = mode;
     msg.uptime_sec = uptime_sec;
-
-    // Manual message publication
-    ASSERT_LT(0, uavcan::protocol::NodeStatus::encode(msg, codec));
-    ASSERT_GE(7, buffer.getMaxWritePos());
-
-    // DataTypeID data_type_id, TransferType transfer_type, NodeID src_node_id, NodeID dst_node_id,
-    // uint_fast8_t frame_index, TransferID transfer_id, bool last_frame
-    uavcan::Frame frame(uavcan::protocol::NodeStatus::DefaultDataTypeID, uavcan::TransferTypeMessageBroadcast,
-                        node_id, uavcan::NodeID::Broadcast, 0, tid, true);
-
-    ASSERT_EQ(buffer.getMaxWritePos(), frame.setPayload(buffer.getRawPtr(), buffer.getMaxWritePos()));
-
-    uavcan::CanFrame can_frame;
-    ASSERT_TRUE(frame.compile(can_frame));
-
-    for (uint8_t i = 0; i < can.getNumIfaces(); i++)
-    {
-        can.ifaces.at(i).pushRx(can_frame);
-    }
+    emulateSingleFrameBroadcastTransfer(can, node_id, msg, tid);
 }
 
 
@@ -68,38 +48,37 @@ TEST(NodeStatusMonitor, Basic)
     /*
      * Empty NSM, no nodes were registered yet
      */
-    ASSERT_FALSE(nsm.findNodeWithWorstStatus().isValid());
+    ASSERT_FALSE(nsm.findNodeWithWorstHealth().isValid());
 
-    uavcan::NodeStatusMonitor::NodeStatus st = nsm.getNodeStatus(uavcan::NodeID(123));
-    ASSERT_FALSE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OFFLINE, st.status_code);
+    ASSERT_FALSE(nsm.isNodeKnown(uavcan::NodeID(123)));
+    ASSERT_EQ(NodeStatus::MODE_OFFLINE, nsm.getNodeStatus(uavcan::NodeID(123)).mode);
 
     /*
      * Some new status messages
      */
-    publishNodeStatus(can, 10, NodeStatus::STATUS_OK, 12, 0);
+    publishNodeStatus(can, 10, NodeStatus::HEALTH_OK, NodeStatus::MODE_OPERATIONAL, 12, 0);
     shortSpin(node);
-    ASSERT_EQ(NodeID(10), nsm.findNodeWithWorstStatus());
+    ASSERT_EQ(NodeID(10), nsm.findNodeWithWorstHealth());
 
-    publishNodeStatus(can, 9,  NodeStatus::STATUS_INITIALIZING, 0, 0);
+    publishNodeStatus(can, 9,  NodeStatus::HEALTH_WARNING, NodeStatus::MODE_INITIALIZATION, 0, 0);
     shortSpin(node);
-    ASSERT_EQ(NodeID(9), nsm.findNodeWithWorstStatus());
+    ASSERT_EQ(NodeID(9), nsm.findNodeWithWorstHealth());
 
-    publishNodeStatus(can, 11, NodeStatus::STATUS_CRITICAL, 999, 0);
+    publishNodeStatus(can, 11, NodeStatus::HEALTH_CRITICAL, NodeStatus::MODE_MAINTENANCE, 999, 0);
     shortSpin(node);
-    ASSERT_EQ(NodeID(11), nsm.findNodeWithWorstStatus());
+    ASSERT_EQ(NodeID(11), nsm.findNodeWithWorstHealth());
 
-    st = nsm.getNodeStatus(uavcan::NodeID(10));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OK, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(10)));
+    ASSERT_EQ(NodeStatus::MODE_OPERATIONAL, nsm.getNodeStatus(uavcan::NodeID(10)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_OK, nsm.getNodeStatus(uavcan::NodeID(10)).health);
 
-    st = nsm.getNodeStatus(uavcan::NodeID(9));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_INITIALIZING, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(9)));
+    ASSERT_EQ(NodeStatus::MODE_INITIALIZATION, nsm.getNodeStatus(uavcan::NodeID(9)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_WARNING, nsm.getNodeStatus(uavcan::NodeID(9)).health);
 
-    st = nsm.getNodeStatus(uavcan::NodeID(11));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_CRITICAL, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(11)));
+    ASSERT_EQ(NodeStatus::MODE_MAINTENANCE, nsm.getNodeStatus(uavcan::NodeID(11)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_CRITICAL, nsm.getNodeStatus(uavcan::NodeID(11)).health);
 
     /*
      * Timeout
@@ -108,21 +87,21 @@ TEST(NodeStatusMonitor, Basic)
 
     clock_mock.advance(500000);
     shortSpin(node);
-    st = nsm.getNodeStatus(uavcan::NodeID(10));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OK, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(10)));
+    ASSERT_EQ(NodeStatus::MODE_OPERATIONAL, nsm.getNodeStatus(uavcan::NodeID(10)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_OK, nsm.getNodeStatus(uavcan::NodeID(10)).health);
 
     clock_mock.advance(500000);
     shortSpin(node);
-    st = nsm.getNodeStatus(uavcan::NodeID(9));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_INITIALIZING, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(9)));
+    ASSERT_EQ(NodeStatus::MODE_INITIALIZATION, nsm.getNodeStatus(uavcan::NodeID(9)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_WARNING, nsm.getNodeStatus(uavcan::NodeID(9)).health);
 
     clock_mock.advance(500000);
     shortSpin(node);
-    st = nsm.getNodeStatus(uavcan::NodeID(11));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_CRITICAL, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(11)));
+    ASSERT_EQ(NodeStatus::MODE_MAINTENANCE, nsm.getNodeStatus(uavcan::NodeID(11)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_CRITICAL, nsm.getNodeStatus(uavcan::NodeID(11)).health);
 
     /*
      * Will timeout now
@@ -130,68 +109,68 @@ TEST(NodeStatusMonitor, Basic)
     clock_mock.advance(4000000);
     shortSpin(node);
 
-    st = nsm.getNodeStatus(uavcan::NodeID(10));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OFFLINE, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(10)));
+    ASSERT_EQ(NodeStatus::MODE_OFFLINE, nsm.getNodeStatus(uavcan::NodeID(10)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_OK, nsm.getNodeStatus(uavcan::NodeID(10)).health);
 
-    st = nsm.getNodeStatus(uavcan::NodeID(9));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OFFLINE, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(9)));
+    ASSERT_EQ(NodeStatus::MODE_OFFLINE, nsm.getNodeStatus(uavcan::NodeID(9)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_WARNING, nsm.getNodeStatus(uavcan::NodeID(9)).health);
 
-    st = nsm.getNodeStatus(uavcan::NodeID(11));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OFFLINE, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(11)));
+    ASSERT_EQ(NodeStatus::MODE_OFFLINE, nsm.getNodeStatus(uavcan::NodeID(11)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_CRITICAL, nsm.getNodeStatus(uavcan::NodeID(11)).health);
 
     /*
      * Recovering one node, adding two extra
      */
-    publishNodeStatus(can, 11, NodeStatus::STATUS_WARNING, 999, 0);
+    publishNodeStatus(can, 11, NodeStatus::HEALTH_WARNING, NodeStatus::MODE_OPERATIONAL, 999, 1);
     shortSpin(node);
 
-    publishNodeStatus(can, 127, NodeStatus::STATUS_WARNING, 9999, 0);
+    publishNodeStatus(can, 127, NodeStatus::HEALTH_WARNING, NodeStatus::MODE_OPERATIONAL, 9999, 1);
     shortSpin(node);
 
-    publishNodeStatus(can, 1, NodeStatus::STATUS_OK, 1234, 0);
+    publishNodeStatus(can, 1, NodeStatus::HEALTH_OK, NodeStatus::MODE_OPERATIONAL, 1234, 1);
     shortSpin(node);
 
     /*
      * Making sure OFFLINE is still worst status
      */
-    ASSERT_EQ(NodeID(9), nsm.findNodeWithWorstStatus());
+    ASSERT_EQ(NodeID(9), nsm.findNodeWithWorstHealth());
 
     /*
      * Final validation
      */
-    st = nsm.getNodeStatus(uavcan::NodeID(10));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OFFLINE, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(10)));
+    ASSERT_EQ(NodeStatus::MODE_OFFLINE, nsm.getNodeStatus(uavcan::NodeID(10)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_OK, nsm.getNodeStatus(uavcan::NodeID(10)).health);
 
-    st = nsm.getNodeStatus(uavcan::NodeID(9));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OFFLINE, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(9)));
+    ASSERT_EQ(NodeStatus::MODE_OFFLINE, nsm.getNodeStatus(uavcan::NodeID(9)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_WARNING, nsm.getNodeStatus(uavcan::NodeID(9)).health);
 
-    st = nsm.getNodeStatus(uavcan::NodeID(11));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_WARNING, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(11)));
+    ASSERT_EQ(NodeStatus::MODE_OPERATIONAL, nsm.getNodeStatus(uavcan::NodeID(11)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_WARNING, nsm.getNodeStatus(uavcan::NodeID(11)).health);
 
-    st = nsm.getNodeStatus(uavcan::NodeID(127));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_WARNING, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(127)));
+    ASSERT_EQ(NodeStatus::MODE_OPERATIONAL, nsm.getNodeStatus(uavcan::NodeID(127)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_WARNING, nsm.getNodeStatus(uavcan::NodeID(127)).health);
 
-    st = nsm.getNodeStatus(uavcan::NodeID(1));
-    ASSERT_TRUE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OK, st.status_code);
+    ASSERT_TRUE(nsm.isNodeKnown(uavcan::NodeID(1)));
+    ASSERT_EQ(NodeStatus::MODE_OPERATIONAL, nsm.getNodeStatus(uavcan::NodeID(1)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_OK, nsm.getNodeStatus(uavcan::NodeID(1)).health);
 
     /*
      * Forgetting
      */
     nsm.forgetNode(127);
-    st = nsm.getNodeStatus(uavcan::NodeID(127));
-    ASSERT_FALSE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OFFLINE, st.status_code);
+    ASSERT_FALSE(nsm.isNodeKnown(uavcan::NodeID(127)));
+    ASSERT_EQ(NodeStatus::MODE_OFFLINE, nsm.getNodeStatus(uavcan::NodeID(127)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_CRITICAL, nsm.getNodeStatus(uavcan::NodeID(127)).health);
 
     nsm.forgetNode(9);
-    st = nsm.getNodeStatus(uavcan::NodeID(9));
-    ASSERT_FALSE(st.known);
-    ASSERT_EQ(NodeStatus::STATUS_OFFLINE, st.status_code);
+    ASSERT_FALSE(nsm.isNodeKnown(uavcan::NodeID(9)));
+    ASSERT_EQ(NodeStatus::MODE_OFFLINE, nsm.getNodeStatus(uavcan::NodeID(9)).mode);
+    ASSERT_EQ(NodeStatus::HEALTH_CRITICAL, nsm.getNodeStatus(uavcan::NodeID(9)).health);
 }

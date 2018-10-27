@@ -2,7 +2,8 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_UTIL_COMPARISON_HPP_INCLUDED
+#define UAVCAN_UTIL_COMPARISON_HPP_INCLUDED
 
 #include <uavcan/util/templates.hpp>
 #include <uavcan/build_config.hpp>
@@ -76,7 +77,7 @@ struct HasIsCloseMethod
 
     template <typename U, typename R> static NotApplicable test(...);
 
-    enum { Result = sizeof(test<This, Rhs>(NULL)) };
+    enum { Result = sizeof(test<This, Rhs>(UAVCAN_NULLPTR)) };
 };
 
 /// First stage: bool L::isClose(R)
@@ -266,3 +267,5 @@ inline bool isCloseToZero<long double>(const long double& x)
 }
 
 }
+
+#endif // UAVCAN_UTIL_COMPARISON_HPP_INCLUDED

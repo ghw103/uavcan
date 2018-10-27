@@ -2,11 +2,12 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_DATA_TYPE_HPP_INCLUDED
+#define UAVCAN_DATA_TYPE_HPP_INCLUDED
 
 #include <cassert>
 #include <cstring>
-#include <uavcan/stdint.hpp>
+#include <uavcan/std.hpp>
 #include <uavcan/build_config.hpp>
 #include <uavcan/transport/transfer.hpp>
 
@@ -18,29 +19,54 @@ class UAVCAN_EXPORT TransferCRC;
 enum DataTypeKind
 {
     DataTypeKindService,
-    DataTypeKindMessage,
-    NumDataTypeKinds
+    DataTypeKindMessage
 };
+
+static const uint8_t NumDataTypeKinds = 2;
+
+
+static inline DataTypeKind getDataTypeKindForTransferType(const TransferType tt)
+{
+    if (tt == TransferTypeServiceResponse ||
+        tt == TransferTypeServiceRequest)
+    {
+        return DataTypeKindService;
+    }
+    else if (tt == TransferTypeMessageBroadcast)
+    {
+        return DataTypeKindMessage;
+    }
+    else
+    {
+        UAVCAN_ASSERT(0);
+        return DataTypeKind(0);
+    }
+}
 
 
 class UAVCAN_EXPORT DataTypeID
 {
-    uint16_t value_;
+    uint32_t value_;
 
 public:
-    static const uint16_t Max = 1023;
+    static const uint16_t MaxServiceDataTypeIDValue = 255;
+    static const uint16_t MaxMessageDataTypeIDValue = 65535;
+    static const uint16_t MaxPossibleDataTypeIDValue = MaxMessageDataTypeIDValue;
 
-    DataTypeID() : value_(0xFFFF) { }
+    DataTypeID() : value_(0xFFFFFFFFUL) { }
 
     DataTypeID(uint16_t id)  // Implicit
         : value_(id)
+    { }
+
+    static DataTypeID getMaxValueForDataTypeKind(const DataTypeKind dtkind);
+
+    bool isValidForDataTypeKind(DataTypeKind dtkind) const
     {
-        UAVCAN_ASSERT(isValid());
+        return value_ <= getMaxValueForDataTypeKind(dtkind).get();
     }
 
-    bool isValid() const { return value_ <= Max; }
-
-    uint16_t get() const { return value_; }
+    uint16_t get() const { return static_cast<uint16_t>(value_); }
 
     bool operator==(DataTypeID rhs) const { return value_ == rhs.value_; }
     bool operator!=(DataTypeID rhs) const { return value_ != rhs.value_; }
@@ -103,29 +129,31 @@ public:
  */
 class UAVCAN_EXPORT DataTypeDescriptor
 {
-    DataTypeKind kind_;
-    DataTypeID id_;
     DataTypeSignature signature_;
     const char* full_name_;
+    DataTypeKind kind_;
+    DataTypeID id_;
 
 public:
     static const unsigned MaxFullNameLen = 80;
 
-    DataTypeDescriptor()
-        : kind_(DataTypeKind(0))
-        , full_name_("")
+    DataTypeDescriptor() :
+        full_name_(""),
+        kind_(DataTypeKind(0))
     { }
 
-    DataTypeDescriptor(DataTypeKind kind, DataTypeID id, const DataTypeSignature& signature, const char* name)
-        : kind_(kind)
-        , id_(id)
-        , signature_(signature)
-        , full_name_(name)
+    DataTypeDescriptor(DataTypeKind kind, DataTypeID id, const DataTypeSignature& signature, const char* name) :
+        signature_(signature),
+        full_name_(name),
+        kind_(kind),
+        id_(id)
     {
-        UAVCAN_ASSERT(kind < NumDataTypeKinds);
+        UAVCAN_ASSERT((kind == DataTypeKindMessage) || (kind == DataTypeKindService));
         UAVCAN_ASSERT(name);
         UAVCAN_ASSERT(std::strlen(name) <= MaxFullNameLen);
     }
+
+    bool isValid() const;
 
     DataTypeKind getKind() const { return kind_; }
     DataTypeID getID() const { return id_; }
@@ -144,3 +172,5 @@ public:
 };
 
 }
+
+#endif // UAVCAN_DATA_TYPE_HPP_INCLUDED

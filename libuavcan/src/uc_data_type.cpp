@@ -12,7 +12,26 @@ namespace uavcan
 /*
  * DataTypeID
  */
-const uint16_t DataTypeID::Max;
+const uint16_t DataTypeID::MaxServiceDataTypeIDValue;
+const uint16_t DataTypeID::MaxMessageDataTypeIDValue;
+const uint16_t DataTypeID::MaxPossibleDataTypeIDValue;
+
+DataTypeID DataTypeID::getMaxValueForDataTypeKind(const DataTypeKind dtkind)
+{
+    if (dtkind == DataTypeKindService)
+    {
+        return MaxServiceDataTypeIDValue;
+    }
+    else if (dtkind == DataTypeKindMessage)
+    {
+        return MaxMessageDataTypeIDValue;
+    }
+    else
+    {
+        UAVCAN_ASSERT(0);
+        return DataTypeID(0);
+    }
+}
 
 /*
  * DataTypeSignatureCRC
@@ -78,6 +97,13 @@ TransferCRC DataTypeSignature::toTransferCRC() const
  */
 const unsigned DataTypeDescriptor::MaxFullNameLen;
 
+bool DataTypeDescriptor::isValid() const
+{
+    return id_.isValidForDataTypeKind(kind_) &&
+           (full_name_ != UAVCAN_NULLPTR) &&
+           (*full_name_ != '\0');
+}
+
 bool DataTypeDescriptor::match(DataTypeKind kind, const char* name) const
 {
     return (kind_ == kind) && !std::strncmp(full_name_, name, MaxFullNameLen);
@@ -111,8 +137,7 @@ std::string DataTypeDescriptor::toString() const
     }
     }
 
-    using namespace std; // For snprintf()
-    char buf[80];
+    char buf[128];
     (void)snprintf(buf, sizeof(buf), "%s:%u%c:%016llx",
                    full_name_, static_cast<unsigned>(id_.get()), kindch,
                    static_cast<unsigned long long>(signature_.get()));

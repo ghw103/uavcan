@@ -2,11 +2,12 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_NODE_ABSTRACT_NODE_HPP_INCLUDED
+#define UAVCAN_NODE_ABSTRACT_NODE_HPP_INCLUDED
 
 #include <uavcan/build_config.hpp>
+#include <uavcan/dynamic_memory.hpp>
 #include <uavcan/node/scheduler.hpp>
-#include <uavcan/node/marshal_buffer.hpp>
 
 namespace uavcan
 {
@@ -22,7 +23,6 @@ public:
     virtual IPoolAllocator& getAllocator() = 0;
     virtual Scheduler& getScheduler() = 0;
     virtual const Scheduler& getScheduler() const = 0;
-    virtual IMarshalBufferProvider& getMarshalBufferProvider() = 0;
     virtual void registerInternalFailure(const char* msg) = 0;
 
     Dispatcher& getDispatcher()             { return getScheduler().getDispatcher(); }
@@ -75,6 +75,56 @@ public:
     {
         return getScheduler().spin(getMonotonicTime() + duration);
     }
+
+    /**
+     * This method is designed for non-blocking applications.
+     * Instead of blocking, it returns immediately once all available CAN frames and timer events are processed.
+     * Note that this is unlike plain @ref spin(), which will strictly return when the deadline is reached,
+     * even if there still are unprocessed events.
+     * This method returns 0 if no errors occurred, or a negative error code if something failed (see error.hpp).
+     */
+    int spinOnce()
+    {
+        return getScheduler().spinOnce();
+    }
+
+    /**
+     * This method allows to directly transmit a raw CAN frame circumventing the whole UAVCAN stack.
+     * Mandatory parameters:
+     *
+     * @param frame             CAN frame to be transmitted.
+     *
+     * @param tx_deadline       The frame will be discarded if it could not be transmitted by this time.
+     *
+     * @param iface_mask        This bitmask allows to select what CAN interfaces this frame should go into.
+     *                          Example:
+     *                           - 1 - the frame will be sent only to iface 0.
+     *                           - 4 - the frame will be sent only to iface 2.
+     *                           - 3 - the frame will be sent to ifaces 0 and 1.
+     *
+     * Optional parameters:
+     *
+     * @param qos               Quality of service. Please refer to the CAN IO manager for details.
+     *
+     * @param flags             CAN IO flags. Please refer to the CAN driver API for details.
+     */
+    int injectTxFrame(const CanFrame& frame, MonotonicTime tx_deadline, uint8_t iface_mask,
+                      CanTxQueue::Qos qos = CanTxQueue::Volatile,
+                      CanIOFlags flags = 0)
+    {
+        return getDispatcher().getCanIOManager().send(frame, tx_deadline, MonotonicTime(), iface_mask, qos, flags);
+    }
+
+#if !UAVCAN_TINY
+    /**
+     * The @ref IRxFrameListener interface allows one to monitor all incoming CAN frames.
+     * This feature can be used to implement multithreaded nodes, or to add secondary protocol support.
+     */
+    void removeRxFrameListener()                       { getDispatcher().removeRxFrameListener(); }
+    void installRxFrameListener(IRxFrameListener* lst) { getDispatcher().installRxFrameListener(lst); }
+#endif
 };
 
 }
+
+#endif // UAVCAN_NODE_ABSTRACT_NODE_HPP_INCLUDED

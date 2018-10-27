@@ -2,13 +2,13 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_NODE_GLOBAL_DATA_TYPE_REGISTRY_HPP_INCLUDED
+#define UAVCAN_NODE_GLOBAL_DATA_TYPE_REGISTRY_HPP_INCLUDED
 
 #include <cassert>
 #include <uavcan/error.hpp>
-#include <uavcan/stdint.hpp>
+#include <uavcan/std.hpp>
 #include <uavcan/data_type.hpp>
-#include <uavcan/util/bitset.hpp>
 #include <uavcan/util/templates.hpp>
 #include <uavcan/util/linked_list.hpp>
 #if UAVCAN_DEBUG
@@ -17,11 +17,6 @@
 
 namespace uavcan
 {
-/**
- * Bit mask where bit at index X is set if there's a Data Type with ID X.
- */
-typedef BitSet<DataTypeID::Max + 1> DataTypeIDMask;
-
 /**
  * This singleton is shared among all existing node instances. It is instantiated automatically
  * when the C++ runtime executes contstructors before main().
@@ -54,13 +49,13 @@ class UAVCAN_EXPORT GlobalDataTypeRegistry : Noncopyable
     {
         const DataTypeID id;
         explicit EntryInsertionComparator(const Entry* dtd)
-            : id((dtd == NULL) ? DataTypeID() : dtd->descriptor.getID())
+            : id((dtd == UAVCAN_NULLPTR) ? DataTypeID() : dtd->descriptor.getID())
         {
-            UAVCAN_ASSERT(dtd != NULL);
+            UAVCAN_ASSERT(dtd != UAVCAN_NULLPTR);
         }
         bool operator()(const Entry* entry) const
         {
-            UAVCAN_ASSERT(entry != NULL);
+            UAVCAN_ASSERT(entry != UAVCAN_NULLPTR);
             return entry->descriptor.getID() > id;
         }
     };
@@ -69,12 +64,12 @@ public:
     /**
      * Result of data type registration
      */
-    enum RegistResult
+    enum RegistrationResult
     {
-        RegistResultOk,            ///< Success, data type is now registered and can be used.
-        RegistResultCollision,     ///< Data type name or ID is not unique.
-        RegistResultInvalidParams, ///< Invalid input parameters.
-        RegistResultFrozen         ///< Data Type Registery has been frozen and can't be modified anymore.
+        RegistrationResultOk,            ///< Success, data type is now registered and can be used.
+        RegistrationResultCollision,     ///< Data type name or ID is not unique.
+        RegistrationResultInvalidParams, ///< Invalid input parameters.
+        RegistrationResultFrozen         ///< Data Type Registery has been frozen and can't be modified anymore.
     };
 
 private:
@@ -87,8 +82,8 @@ private:
 
     List* selectList(DataTypeKind kind) const;
 
-    RegistResult remove(Entry* dtd);
-    RegistResult registImpl(Entry* dtd);
+    RegistrationResult remove(Entry* dtd);
+    RegistrationResult registImpl(Entry* dtd);
 
 public:
     /**
@@ -107,7 +102,7 @@ public:
      * @param id        Data Type ID for this data type.
      */
     template <typename Type>
-    RegistResult regist(DataTypeID id);
+    RegistrationResult registerDataType(DataTypeID id);
 
     /**
      * Data Type registry needs to be frozen before a node instance can use it in
@@ -125,6 +120,15 @@ public:
 
     /**
      * Finds data type descriptor by full data type name, e.g. "uavcan.protocol.NodeStatus".
+     * Messages are searched first, then services.
+     * Returns null pointer if the data type with this name is not registered.
+     * @param name  Full data type name
+     * @return      Descriptor for this data type or null pointer if not found
+     */
+    const DataTypeDescriptor* find(const char* name) const;
+
+    /**
+     * Finds data type descriptor by full data type name, e.g. "uavcan.protocol.NodeStatus", and data type kind.
      * Returns null pointer if the data type with this name is not registered.
      * @param kind  Data Type Kind - message or service
      * @param name  Full data type name
@@ -140,27 +144,6 @@ public:
      * @return      Descriptor for this data type or null pointer if not found
      */
     const DataTypeDescriptor* find(DataTypeKind kind, DataTypeID dtid) const;
-
-    /**
-     * Computes Aggregate Signature for all known data types selected by the mask.
-     * Please read the DSDL specification.
-     * @param[in]       kind            Data Type Kind - messages or services.
-     * @param[inout]    inout_id_mask   Data types to compute aggregate signature for; bits at
-     *                                  the positions of unknown data types will be cleared.
-     * @return          Computed data type signature.
-     */
-    DataTypeSignature computeAggregateSignature(DataTypeKind kind, DataTypeIDMask& inout_id_mask) const;
-
-    /**
-     * Sets the mask so that only bits corresponding to known data types will be set.
-     * In other words:
-     *  for data_type_id := [0, 1023]
-     *      mask[data_type_id] := data_type_exists(data_type_id)
-     *
-     * @param[in]   kind    Data Type Kind - messages or services.
-     * @param[out]  mask    Output mask of known data types.
-     */
-    void getDataTypeIDMask(DataTypeKind kind, DataTypeIDMask& mask) const;
 
     /**
      * Returns the number of registered message types.
@@ -204,13 +187,15 @@ struct UAVCAN_EXPORT DefaultDataTypeRegistrator
 {
     DefaultDataTypeRegistrator()
     {
-        const GlobalDataTypeRegistry::RegistResult res =
-            GlobalDataTypeRegistry::instance().regist<Type>(Type::DefaultDataTypeID);
+#if !UAVCAN_NO_GLOBAL_DATA_TYPE_REGISTRY
+        const GlobalDataTypeRegistry::RegistrationResult res =
+            GlobalDataTypeRegistry::instance().registerDataType<Type>(Type::DefaultDataTypeID);
 
-        if (res != GlobalDataTypeRegistry::RegistResultOk)
+        if (res != GlobalDataTypeRegistry::RegistrationResultOk)
         {
             handleFatalError("Type reg failed");
         }
+#endif
     }
 };
 
@@ -220,24 +205,30 @@ struct UAVCAN_EXPORT DefaultDataTypeRegistrator
  * GlobalDataTypeRegistry
  */
 template <typename Type>
-GlobalDataTypeRegistry::RegistResult GlobalDataTypeRegistry::regist(DataTypeID id)
+GlobalDataTypeRegistry::RegistrationResult GlobalDataTypeRegistry::registerDataType(DataTypeID id)
 {
     if (isFrozen())
     {
-        return RegistResultFrozen;
+        return RegistrationResultFrozen;
     }
+
     static Entry entry;
+
     {
-        const RegistResult remove_res = remove(&entry);
-        if (remove_res != RegistResultOk)
+        const RegistrationResult remove_res = remove(&entry);
+        if (remove_res != RegistrationResultOk)
         {
             return remove_res;
         }
     }
-    entry = Entry(DataTypeKind(Type::DataTypeKind), id, Type::getDataTypeSignature(), Type::getDataTypeFullName());
+
+    // We can't just overwrite the entry itself because it's noncopyable
+    entry.descriptor = DataTypeDescriptor(DataTypeKind(Type::DataTypeKind), id,
+                                          Type::getDataTypeSignature(), Type::getDataTypeFullName());
+
     {
-        const RegistResult remove_res = remove(&entry);
-        if (remove_res != RegistResultOk)
+        const RegistrationResult remove_res = remove(&entry);
+        if (remove_res != RegistrationResultOk)
         {
             return remove_res;
         }
@@ -246,3 +237,5 @@ GlobalDataTypeRegistry::RegistResult GlobalDataTypeRegistry::regist(DataTypeID i
 }
 
 }
+
+#endif // UAVCAN_NODE_GLOBAL_DATA_TYPE_REGISTRY_HPP_INCLUDED

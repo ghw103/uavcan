@@ -2,10 +2,11 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_ERROR_HPP_INCLUDED
+#define UAVCAN_ERROR_HPP_INCLUDED
 
 #include <uavcan/build_config.hpp>
-#include <uavcan/stdint.hpp>
+#include <uavcan/std.hpp>
 
 namespace uavcan
 {
@@ -32,6 +33,8 @@ const int16_t ErrNotInited               = 8;
 const int16_t ErrRecursiveCall           = 9;
 const int16_t ErrLogic                   = 10;
 const int16_t ErrPassiveMode             = 11;  ///< Operation not permitted in passive mode
+const int16_t ErrTransferTooLong         = 12;  ///< Transfer of this length cannot be sent with given transfer type
+const int16_t ErrInvalidConfiguration    = 13;
 /**
  * @}
  */
@@ -53,3 +56,5 @@ UAVCAN_EXPORT
 void handleFatalError(const char* msg);
 
 }
+
+#endif // UAVCAN_ERROR_HPP_INCLUDED

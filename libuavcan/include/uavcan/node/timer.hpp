@@ -2,9 +2,10 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_NODE_TIMER_HPP_INCLUDED
+#define UAVCAN_NODE_TIMER_HPP_INCLUDED
 
-#include <uavcan/stdint.hpp>
+#include <uavcan/std.hpp>
 #include <uavcan/error.hpp>
 #include <uavcan/build_config.hpp>
 #include <uavcan/util/linked_list.hpp>
@@ -102,7 +103,7 @@ private:
 
     virtual void handleTimerEvent(const TimerEvent& event)
     {
-        if (try_implicit_cast<bool>(callback_, true))
+        if (coerceOrFallback<bool>(callback_, true))
         {
             callback_(event);
         }
@@ -143,3 +144,5 @@ typedef TimerEventForwarder<std::function<void (const TimerEvent& event)> > Time
 #endif
 
 }
+
+#endif // UAVCAN_NODE_TIMER_HPP_INCLUDED

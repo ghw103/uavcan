@@ -2,7 +2,8 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_TRANSPORT_TRANSFER_RECEIVER_HPP_INCLUDED
+#define UAVCAN_TRANSPORT_TRANSFER_RECEIVER_HPP_INCLUDED
 
 #include <cstdlib>
 #include <uavcan/build_config.hpp>
@@ -12,43 +13,52 @@
 namespace uavcan
 {
 
-UAVCAN_PACKED_BEGIN
 class UAVCAN_EXPORT TransferReceiver
 {
 public:
     enum ResultCode { ResultNotComplete, ResultComplete, ResultSingleFrame };
 
-    static const uint32_t MinTransferIntervalUSec     = 1   * 1000UL;
-    static const uint32_t MaxTransferIntervalUSec     = 10  * 1000 * 1000UL;
-    static const uint32_t DefaultTransferIntervalUSec = 1   * 1000 * 1000UL;
+    static const uint16_t MinTransferIntervalMSec     = 1;
+    static const uint16_t MaxTransferIntervalMSec     = 0xFFFF;
+    static const uint16_t DefaultTransferIntervalMSec = 1000;
+    static const uint16_t DefaultTidTimeoutMSec       = 1000;
 
     static MonotonicDuration getDefaultTransferInterval()
     {
-        return MonotonicDuration::fromUSec(DefaultTransferIntervalUSec);
+        return MonotonicDuration::fromMSec(DefaultTransferIntervalMSec);
     }
-    static MonotonicDuration getMinTransferInterval() { return MonotonicDuration::fromUSec(MinTransferIntervalUSec); }
-    static MonotonicDuration getMaxTransferInterval() { return MonotonicDuration::fromUSec(MaxTransferIntervalUSec); }
+    static MonotonicDuration getMinTransferInterval() { return MonotonicDuration::fromMSec(MinTransferIntervalMSec); }
+    static MonotonicDuration getMaxTransferInterval() { return MonotonicDuration::fromMSec(MaxTransferIntervalMSec); }
 
 private:
-    enum TidRelation { TidSame, TidRepeat, TidFuture };
-    static const uint8_t IfaceIndexNotSet = 0xFF;
+    enum { IfaceIndexNotSet = MaxCanIfaces };
+
+    enum { ErrorCntMask = 31 };
+    enum { IfaceIndexMask = MaxCanIfaces };
 
     MonotonicTime prev_transfer_ts_;
     MonotonicTime this_transfer_ts_;
     UtcTime first_frame_ts_;
-    uint32_t transfer_interval_usec_;
+    uint16_t transfer_interval_msec_;
     uint16_t this_transfer_crc_;
+
     uint16_t buffer_write_pos_;
-    TransferID tid_;
-    uint8_t iface_index_;
-    uint8_t next_frame_index_;
-    mutable uint8_t error_cnt_;
+
+    TransferID tid_;    // 1 byte field
+
+    // 1 byte aligned bitfields:
+    uint8_t next_toggle_        : 1;
+    uint8_t iface_index_        : 2;
+    mutable uint8_t error_cnt_  : 5;
 
     bool isInitialized() const { return iface_index_ != IfaceIndexNotSet; }
 
-    void registerError() const;
+    bool isMidTransfer() const { return buffer_write_pos_ > 0; }
 
-    TidRelation getTidRelation(const RxFrame& frame) const;
+    MonotonicDuration getIfaceSwitchDelay() const;
+    MonotonicDuration getTidTimeout() const;
+
+    void registerError() const;
 
     void updateTransferTimings();
     void prepareForNextTransfer();
@@ -58,13 +68,13 @@ private:
     ResultCode receive(const RxFrame& frame, TransferBufferAccessor& tba);
 
 public:
-    TransferReceiver()
-        : transfer_interval_usec_(DefaultTransferIntervalUSec)
-        , this_transfer_crc_(0)
-        , buffer_write_pos_(0)
-        , iface_index_(IfaceIndexNotSet)
-        , next_frame_index_(0)
-        , error_cnt_(0)
+    TransferReceiver() :
+        transfer_interval_msec_(DefaultTransferIntervalMSec),
+        this_transfer_crc_(0),
+        buffer_write_pos_(0),
+        next_toggle_(false),
+        iface_index_(IfaceIndexNotSet),
+        error_cnt_(0)
     { }
 
     bool isTimedOut(MonotonicTime current_ts) const;
@@ -78,8 +88,9 @@ public:
 
     uint16_t getLastTransferCrc() const { return this_transfer_crc_; }
 
-    MonotonicDuration getInterval() const { return MonotonicDuration::fromUSec(transfer_interval_usec_); }
+    MonotonicDuration getInterval() const { return MonotonicDuration::fromMSec(transfer_interval_msec_); }
 };
-UAVCAN_PACKED_END
 
 }
+
+#endif // UAVCAN_TRANSPORT_TRANSFER_RECEIVER_HPP_INCLUDED

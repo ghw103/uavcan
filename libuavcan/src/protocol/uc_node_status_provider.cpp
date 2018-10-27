@@ -21,12 +21,12 @@ int NodeStatusProvider::publish()
     UAVCAN_ASSERT(uptime.isPositive());
     node_info_.status.uptime_sec = uint32_t(uptime.toMSec() / 1000);
 
-    UAVCAN_ASSERT(node_info_.status.status_code <= protocol::NodeStatus::FieldTypes::status_code::max());
+    UAVCAN_ASSERT(node_info_.status.health <= protocol::NodeStatus::FieldTypes::health::max());
 
     return node_status_pub_.broadcast(node_info_.status);
 }
 
-void NodeStatusProvider::publishWithErrorHandling()
+void NodeStatusProvider::handleTimerEvent(const TimerEvent&)
 {
     if (getNode().isPassiveMode())
     {
@@ -42,17 +42,6 @@ void NodeStatusProvider::publishWithErrorHandling()
     }
 }
 
-void NodeStatusProvider::handleTimerEvent(const TimerEvent&)
-{
-    publishWithErrorHandling();
-}
-
-void NodeStatusProvider::handleGlobalDiscoveryRequest(const protocol::GlobalDiscoveryRequest&)
-{
-    UAVCAN_TRACE("NodeStatusProvider", "Got GlobalDiscoveryRequest");
-    publishWithErrorHandling();
-}
-
 void NodeStatusProvider::handleGetNodeInfoRequest(const protocol::GetNodeInfo::Request&,
                                                   protocol::GetNodeInfo::Response& rsp)
 {
@@ -61,7 +50,7 @@ void NodeStatusProvider::handleGetNodeInfoRequest(const protocol::GetNodeInfo::R
     rsp = node_info_;
 }
 
-int NodeStatusProvider::startAndPublish()
+int NodeStatusProvider::startAndPublish(const TransferPriority priority)
 {
     if (!isNodeInfoInitialized())
     {
@@ -70,6 +59,8 @@ int NodeStatusProvider::startAndPublish()
     }
 
     int res = -1;
+
+    node_status_pub_.setPriority(priority);
 
     if (!getNode().isPassiveMode())
     {
@@ -80,34 +71,27 @@ int NodeStatusProvider::startAndPublish()
         }
     }
 
-    res = gdr_sub_.start(GlobalDiscoveryRequestCallback(this, &NodeStatusProvider::handleGlobalDiscoveryRequest));
-    if (res < 0)
-    {
-        goto fail;
-    }
-
     res = gni_srv_.start(GetNodeInfoCallback(this, &NodeStatusProvider::handleGetNodeInfoRequest));
     if (res < 0)
     {
         goto fail;
     }
 
-    setStatusPublishingPeriod(MonotonicDuration::fromMSec(protocol::NodeStatus::MAX_PUBLICATION_PERIOD_MS));
+    setStatusPublicationPeriod(MonotonicDuration::fromMSec(protocol::NodeStatus::MAX_BROADCASTING_PERIOD_MS));
 
     return res;
 
 fail:
     UAVCAN_ASSERT(res < 0);
-    gdr_sub_.stop();
     gni_srv_.stop();
     TimerBase::stop();
     return res;
 }
 
-void NodeStatusProvider::setStatusPublishingPeriod(uavcan::MonotonicDuration period)
+void NodeStatusProvider::setStatusPublicationPeriod(uavcan::MonotonicDuration period)
 {
-    const MonotonicDuration maximum = MonotonicDuration::fromMSec(protocol::NodeStatus::MAX_PUBLICATION_PERIOD_MS);
-    const MonotonicDuration minimum = MonotonicDuration::fromMSec(protocol::NodeStatus::MIN_PUBLICATION_PERIOD_MS);
+    const MonotonicDuration maximum = MonotonicDuration::fromMSec(protocol::NodeStatus::MAX_BROADCASTING_PERIOD_MS);
+    const MonotonicDuration minimum = MonotonicDuration::fromMSec(protocol::NodeStatus::MIN_BROADCASTING_PERIOD_MS);
 
     period = min(period, maximum);
     period = max(period, minimum);
@@ -120,21 +104,31 @@ void NodeStatusProvider::setStatusPublishingPeriod(uavcan::MonotonicDuration per
                  period.toString().c_str(), node_status_pub_.getTxTimeout().toString().c_str());
 }
 
-uavcan::MonotonicDuration NodeStatusProvider::getStatusPublishingPeriod() const
+uavcan::MonotonicDuration NodeStatusProvider::getStatusPublicationPeriod() const
 {
     return TimerBase::getPeriod();
 }
 
-void NodeStatusProvider::setStatusCode(uint8_t code)
+void NodeStatusProvider::setHealth(uint8_t code)
 {
-    node_info_.status.status_code = code;
+    node_info_.status.health = code;
 }
 
-void NodeStatusProvider::setName(const char* name)
+void NodeStatusProvider::setMode(uint8_t code)
 {
-    if ((name != NULL) && (*name != '\0') && (node_info_.name.empty()))
+    node_info_.status.mode = code;
+}
+
+void NodeStatusProvider::setVendorSpecificStatusCode(VendorSpecificStatusCode code)
+{
+    node_info_.status.vendor_specific_status_code = code;
+}
+
+void NodeStatusProvider::setName(const NodeName& name)
+{
+    if (node_info_.name.empty())
     {
-        node_info_.name = name;  // The string contents will be copied, not just pointer.
+        node_info_.name = name;
     }
 }
 

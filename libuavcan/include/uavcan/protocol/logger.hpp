@@ -2,12 +2,15 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_PROTOCOL_LOGGER_HPP_INCLUDED
+#define UAVCAN_PROTOCOL_LOGGER_HPP_INCLUDED
 
 #include <uavcan/time.hpp>
+#include <uavcan/build_config.hpp>
 #include <uavcan/protocol/debug/LogMessage.hpp>
 #include <uavcan/marshal/char_array_formatter.hpp>
 #include <uavcan/node/publisher.hpp>
+#include <cstdlib>
 
 #if !defined(UAVCAN_CPP_VERSION) || !defined(UAVCAN_CPP11)
 # error UAVCAN_CPP_VERSION
@@ -61,7 +64,7 @@ public:
      * This value is higher than any valid severity value.
      * Use it to completely suppress the output.
      */
-    static const LogLevel LevelAboveAll = (1 << protocol::debug::LogLevel::FieldTypes::value::BitLen) - 1;
+    static LogLevel getLogLevelAboveAll() { return (1U << protocol::debug::LogLevel::FieldTypes::value::BitLen) - 1U; }
 
 private:
     enum { DefaultTxTimeoutMs = 2000 };
@@ -71,12 +74,15 @@ private:
     LogLevel level_;
     ILogSink* external_sink_;
 
-    LogLevel getExternalSinkLevel() const;
+    LogLevel getExternalSinkLevel() const
+    {
+        return (external_sink_ == UAVCAN_NULLPTR) ? getLogLevelAboveAll() : external_sink_->getLogLevel();
+    }
 
 public:
     explicit Logger(INode& node)
         : logmsg_pub_(node)
-        , external_sink_(NULL)
+        , external_sink_(UAVCAN_NULLPTR)
     {
         level_ = protocol::debug::LogLevel::ERROR;
         setTxTimeout(MonotonicDuration::fromMSec(DefaultTxTimeoutMs));
@@ -88,7 +94,15 @@ public:
      * Must be called once before use.
      * Returns negative error code.
      */
-    int init();
+    int init(const TransferPriority priority = TransferPriority::Lowest)
+    {
+        const int res = logmsg_pub_.init(priority);
+        if (res < 0)
+        {
+            return res;
+        }
+        return 0;
+    }
 
     /**
      * Logs one message. Please consider using helper methods instead of this one.
@@ -101,7 +115,19 @@ public:
      *
      * Returns negative error code.
      */
-    int log(const protocol::debug::LogMessage& message);
+    int log(const protocol::debug::LogMessage& message)
+    {
+        int retval = 0;
+        if (message.level.value >= getExternalSinkLevel())
+        {
+            external_sink_->log(message);
+        }
+        if (message.level.value >= level_)
+        {
+            retval = logmsg_pub_.broadcast(message);
+        }
+        return retval;
+    }
 
     /**
      * Severity filter for UAVCAN broadcasting.
@@ -176,7 +202,28 @@ public:
 
 #else
 
-    int log(LogLevel level, const char* source, const char* text) UAVCAN_NOEXCEPT;
+    int log(LogLevel level, const char* source, const char* text) UAVCAN_NOEXCEPT
+    {
+    #if UAVCAN_EXCEPTIONS
+        try
+    #endif
+        {
+            if (level >= level_ || level >= getExternalSinkLevel())
+            {
+                msg_buf_.level.value = level;
+                msg_buf_.source = source;
+                msg_buf_.text = text;
+                return log(msg_buf_);
+            }
+            return 0;
+        }
+    #if UAVCAN_EXCEPTIONS
+        catch (...)
+        {
+            return -ErrFailure;
+        }
+    #endif
+    }
 
     int logDebug(const char* source, const char* text) UAVCAN_NOEXCEPT
     {
@@ -235,3 +282,5 @@ int Logger::log(LogLevel level, const char* source, const char* format, Args... 
 #endif
 
 }
+
+#endif // UAVCAN_PROTOCOL_LOGGER_HPP_INCLUDED

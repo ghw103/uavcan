@@ -54,11 +54,11 @@ TEST(Dsdl, EmptyServices)
 TEST(Dsdl, Signature)
 {
     ASSERT_EQ(0xe74617107a34aa9c, root_ns_a::EmptyService::getDataTypeSignature().get());
-    ASSERT_EQ("root_ns_a.EmptyService", root_ns_a::EmptyService::getDataTypeFullName());
+    ASSERT_STREQ("root_ns_a.EmptyService", root_ns_a::EmptyService::getDataTypeFullName());
     ASSERT_EQ(uavcan::DataTypeKindService, root_ns_a::EmptyService::DataTypeKind);
 
-    ASSERT_EQ(0x41a2582ee72be419, root_ns_a::NestedMessage::getDataTypeSignature().get());  // Computed manually
-    ASSERT_EQ("root_ns_a.NestedMessage", root_ns_a::NestedMessage::getDataTypeFullName());
+    ASSERT_EQ(0x99604d7066e0d713, root_ns_a::NestedMessage::getDataTypeSignature().get());  // Computed manually
+    ASSERT_STREQ("root_ns_a.NestedMessage", root_ns_a::NestedMessage::getDataTypeFullName());
     ASSERT_EQ(uavcan::DataTypeKindMessage, root_ns_a::NestedMessage::DataTypeKind);
 }
 
@@ -107,7 +107,7 @@ TEST(Dsdl, CloseComparison)
 //    /*
 //     * Descriptors
 //     */
-//    const uavcan::DataTypeDescriptor* desc = NULL;
+//    const uavcan::DataTypeDescriptor* desc = UAVCAN_NULLPTR;
 //
 //    desc = GlobalDataTypeRegistry::instance().find(uavcan::DataTypeKindMessage, "root_ns_a.EmptyMessage");
 //    ASSERT_TRUE(desc);

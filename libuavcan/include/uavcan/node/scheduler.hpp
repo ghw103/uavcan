@@ -2,7 +2,8 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_NODE_SCHEDULER_HPP_INCLUDED
+#define UAVCAN_NODE_SCHEDULER_HPP_INCLUDED
 
 #include <uavcan/error.hpp>
 #include <uavcan/util/linked_list.hpp>
@@ -13,7 +14,7 @@ namespace uavcan
 
 class UAVCAN_EXPORT Scheduler;
 
-class UAVCAN_EXPORT DeadlineHandler : public LinkedListNode<DeadlineHandler>, Noncopyable
+class UAVCAN_EXPORT DeadlineHandler : public LinkedListNode<DeadlineHandler>
 {
     MonotonicTime deadline_;
 
@@ -31,6 +32,7 @@ public:
 
     void startWithDeadline(MonotonicTime deadline);
     void startWithDelay(MonotonicDuration delay);
+    void generateDeadlineImmediately() { startWithDeadline(MonotonicTime::fromUSec(1)); }
 
     void stop();
 
@@ -75,12 +77,23 @@ class UAVCAN_EXPORT Scheduler : Noncopyable
     MonotonicDuration cleanup_period_;
     bool inside_spin_;
 
+    struct InsideSpinSetter
+    {
+        Scheduler& owner;
+        InsideSpinSetter(Scheduler& o)
+            : owner(o)
+        {
+            owner.inside_spin_ = true;
+        }
+        ~InsideSpinSetter() { owner.inside_spin_ = false; }
+    };
+
     MonotonicTime computeDispatcherSpinDeadline(MonotonicTime spin_deadline) const;
     void pollCleanup(MonotonicTime mono_ts, uint32_t num_frames_processed_with_last_spin);
 
 public:
-    Scheduler(ICanDriver& can_driver, IPoolAllocator& allocator, ISystemClock& sysclock, IOutgoingTransferRegistry& otr)
-        : dispatcher_(can_driver, allocator, sysclock, otr)
+    Scheduler(ICanDriver& can_driver, IPoolAllocator& allocator, ISystemClock& sysclock)
+        : dispatcher_(can_driver, allocator, sysclock)
         , prev_cleanup_ts_(sysclock.getMonotonic())
         , deadline_resolution_(MonotonicDuration::fromMSec(DefaultDeadlineResolutionMs))
         , cleanup_period_(MonotonicDuration::fromMSec(DefaultCleanupPeriodMs))
@@ -89,9 +102,17 @@ public:
 
     /**
      * Spin until the deadline, or until some error occurs.
+     * This function will return strictly when the deadline is reached, even if there are unprocessed frames.
      * Returns negative error code.
      */
     int spin(MonotonicTime deadline);
+
+    /**
+     * Non-blocking version of @ref spin() - spins until all pending frames and events are processed,
+     * or until some error occurs. If there's nothing to do, returns immediately.
+     * Returns negative error code.
+     */
+    int spinOnce();
 
     DeadlineScheduler& getDeadlineScheduler() { return deadline_scheduler_; }
 
@@ -130,3 +151,5 @@ public:
 };
 
 }
+
+#endif // UAVCAN_NODE_SCHEDULER_HPP_INCLUDED

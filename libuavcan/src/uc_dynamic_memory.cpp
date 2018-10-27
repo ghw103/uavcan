@@ -18,7 +18,7 @@ void* LimitedPoolAllocator::allocate(std::size_t size)
     }
     else
     {
-        return NULL;
+        return UAVCAN_NULLPTR;
     }
 }
 
@@ -33,19 +33,9 @@ void LimitedPoolAllocator::deallocate(const void* ptr)
     }
 }
 
-bool LimitedPoolAllocator::isInPool(const void* ptr) const
+uint16_t LimitedPoolAllocator::getBlockCapacity() const
 {
-    return allocator_.isInPool(ptr);
-}
-
-std::size_t LimitedPoolAllocator::getBlockSize() const
-{
-    return allocator_.getBlockSize();
-}
-
-std::size_t LimitedPoolAllocator::getNumBlocks() const
-{
-    return min(max_blocks_, allocator_.getNumBlocks());
+    return min(max_blocks_, allocator_.getBlockCapacity());
 }
 
 }

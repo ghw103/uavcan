@@ -105,6 +105,12 @@ TEST(DataTypeDescriptor, ToString)
     desc = uavcan::DataTypeDescriptor(uavcan::DataTypeKindMessage, 123,
                                       uavcan::DataTypeSignature(0xdeadbeef1234), "Bar");
     ASSERT_EQ("Bar:123m:0000deadbeef1234", desc.toString());
+
+    // Max length - 80 chars
+    desc = uavcan::DataTypeDescriptor(uavcan::DataTypeKindMessage, 1023, uavcan::DataTypeSignature(0xdeadbeef12345678),
+              "sirius_cybernetics_corporation.marvin.model_a.LongDataTypeName123456789abcdefghi");
+    ASSERT_EQ("sirius_cybernetics_corporation.marvin.model_a.LongDataTypeName123456789abcdefghi:1023m:deadbeef12345678",
+              desc.toString());
 }
 
 
@@ -123,16 +129,19 @@ TEST(DataTypeID, Basic)
     uavcan::DataTypeID id;
 
     ASSERT_EQ(0xFFFF, id.get());
-    ASSERT_FALSE(id.isValid());
+    ASSERT_FALSE(id.isValidForDataTypeKind(uavcan::DataTypeKindMessage));
+    ASSERT_FALSE(id.isValidForDataTypeKind(uavcan::DataTypeKindService));
 
     id = 123;
-    uavcan::DataTypeID id2 = 456;
+    uavcan::DataTypeID id2 = 255;
 
     ASSERT_EQ(123, id.get());
-    ASSERT_EQ(456, id2.get());
+    ASSERT_EQ(255, id2.get());
 
-    ASSERT_TRUE(id.isValid());
-    ASSERT_TRUE(id2.isValid());
+    ASSERT_TRUE(id.isValidForDataTypeKind(uavcan::DataTypeKindMessage));
+    ASSERT_TRUE(id.isValidForDataTypeKind(uavcan::DataTypeKindService));
+    ASSERT_TRUE(id2.isValidForDataTypeKind(uavcan::DataTypeKindMessage));
+    ASSERT_TRUE(id2.isValidForDataTypeKind(uavcan::DataTypeKindService));
 
     ASSERT_TRUE(id < id2);
     ASSERT_TRUE(id <= id2);
@@ -146,4 +155,8 @@ TEST(DataTypeID, Basic)
     ASSERT_FALSE(id2 > id);
     ASSERT_TRUE(id2 >= id);
     ASSERT_TRUE(id == id2);
+
+    id = 1024;
+    ASSERT_TRUE(id.isValidForDataTypeKind(uavcan::DataTypeKindMessage));
+    ASSERT_FALSE(id.isValidForDataTypeKind(uavcan::DataTypeKindService));
 }

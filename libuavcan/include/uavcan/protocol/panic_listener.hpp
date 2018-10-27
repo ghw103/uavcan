@@ -2,7 +2,8 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_PROTOCOL_PANIC_LISTENER_HPP_INCLUDED
+#define UAVCAN_PROTOCOL_PANIC_LISTENER_HPP_INCLUDED
 
 #include <cassert>
 #include <uavcan/debug.hpp>
@@ -49,7 +50,7 @@ class UAVCAN_EXPORT PanicListener : Noncopyable
 
     void invokeCallback(const ReceivedDataStructure<protocol::Panic>& msg)
     {
-        if (try_implicit_cast<bool>(callback_, true))
+        if (coerceOrFallback<bool>(callback_, true))
         {
             callback_(msg);
         }
@@ -105,7 +106,7 @@ public:
     int start(const Callback& callback)
     {
         stop();
-        if (!try_implicit_cast<bool>(callback, true))
+        if (!coerceOrFallback<bool>(callback, true))
         {
             UAVCAN_TRACE("PanicListener", "Invalid callback");
             return -ErrInvalidParam;
@@ -123,3 +124,5 @@ public:
 };
 
 }
+
+#endif // UAVCAN_PROTOCOL_PANIC_LISTENER_HPP_INCLUDED

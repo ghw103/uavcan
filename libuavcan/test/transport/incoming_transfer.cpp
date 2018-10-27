@@ -6,19 +6,20 @@
 #include <gtest/gtest.h>
 #include <uavcan/transport/transfer_listener.hpp>
 #include "../clock.hpp"
+#include "transfer_test_helpers.hpp"
 
 
 static uavcan::RxFrame makeFrame()
 {
-    uavcan::RxFrame frame(
-        uavcan::Frame(123, uavcan::TransferTypeMessageBroadcast, 1, uavcan::NodeID::Broadcast, 0, 1, true),
-        tsMono(123), tsUtc(456), 0);
+    uavcan::RxFrame frame(uavcan::Frame(123, uavcan::TransferTypeMessageBroadcast, 1, uavcan::NodeID::Broadcast, 0),
+                          tsMono(123), tsUtc(456), 0);
     uint8_t data[8];
     for (uint8_t i = 0; i < sizeof(data); i++)
     {
         data[i] = i;
     }
     frame.setPayload(data, sizeof(data));
+    frame.setEndOfTransfer(true);
     return frame;
 }
 
@@ -71,8 +72,8 @@ TEST(MultiFrameIncomingTransfer, Basic)
     using uavcan::RxFrame;
     using uavcan::MultiFrameIncomingTransfer;
 
-    uavcan::PoolManager<1> poolmgr;                 // We don't need dynamic memory
-    uavcan::TransferBufferManager<256, 1> bufmgr(poolmgr);
+    uavcan::PoolAllocator<uavcan::MemPoolBlockSize * 100, uavcan::MemPoolBlockSize> poolmgr;
+    uavcan::TransferBufferManager bufmgr(256, poolmgr);
 
     const RxFrame frame = makeFrame();
     uavcan::TransferBufferManagerKey bufmgr_key(frame.getSrcNodeID(), frame.getTransferType());

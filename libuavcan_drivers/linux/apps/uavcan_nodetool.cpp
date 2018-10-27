@@ -14,8 +14,7 @@
 #include "debug.hpp"
 
 #include <uavcan/protocol/param/GetSet.hpp>
-#include <uavcan/protocol/param/SaveErase.hpp>
-#include <uavcan/protocol/EnumerationRequest.hpp>
+#include <uavcan/protocol/param/ExecuteOpcode.hpp>
 #include <uavcan/equipment/hardpoint/Command.hpp>
 
 namespace
@@ -73,57 +72,12 @@ public:
     }
 };
 
-
-std::string paramValueToString(const uavcan::protocol::param::Value& value)
-{
-    if (!value.value_bool.empty())
-    {
-        return value.value_bool[0] ? "true" : "false";
-    }
-    else if (!value.value_int.empty())
-    {
-        return std::to_string(value.value_int[0]);
-    }
-    else if (!value.value_float.empty())
-    {
-        return std::to_string(value.value_float[0]);
-    }
-    else
-    {
-        return "?";
-    }
-}
-
-void printGetSetResponseHeader()
-{
-    std::cout
-        << "Name                                     Value          Default        Min            Max\n"
-        << "--------------------------------------------------------------------------------------------------"
-        << std::endl;
-}
-
-void printGetSetResponse(const uavcan::protocol::param::GetSet::Response& resp)
-{
-    const auto original_flags = std::cout.flags();
-
-    std::cout << std::setw(41) << std::left << resp.name.c_str();
-    std::cout << std::setw(15) << paramValueToString(resp.value);
-    std::cout << std::setw(15) << paramValueToString(resp.default_value);
-    std::cout << std::setw(15) << paramValueToString(resp.min_value);
-    std::cout << std::setw(15) << paramValueToString(resp.max_value);
-    std::cout << std::endl;
-
-    std::cout.width(0);         // Clears the effect of std::setw()
-    std::cout.flags(original_flags);
-}
-
 uavcan_linux::NodePtr initNode(const std::vector<std::string>& ifaces, uavcan::NodeID nid, const std::string& name)
 {
-    auto node = uavcan_linux::makeNode(ifaces);
-    node->setNodeID(nid);
-    node->setName(name.c_str());
-    ENFORCE(0 == node->start());  // This node doesn't check its network compatibility
-    node->setStatusOk();
+    auto node = uavcan_linux::makeNode(ifaces, name.c_str(),
+                                       uavcan::protocol::SoftwareVersion(), uavcan::protocol::HardwareVersion(),
+                                       nid);
+    node->setModeOperational();
     return node;
 }
 
@@ -158,7 +112,6 @@ const std::map<std::string,
             [](const uavcan_linux::NodePtr& node, const uavcan::NodeID node_id, const std::vector<std::string>& args)
             {
                 auto client = node->makeBlockingServiceClient<uavcan::protocol::param::GetSet>();
-                printGetSetResponseHeader();
                 uavcan::protocol::param::GetSet::Request request;
                 if (args.empty())
                 {
@@ -169,15 +122,19 @@ const std::map<std::string,
                         {
                             break;
                         }
-                        printGetSetResponse(response);
+                        std::cout
+                            << response
+                            << "\n" << std::string(80, '-')
+                            << std::endl;
                         request.index++;
                     }
                 }
                 else
                 {
                     request.name = args.at(0).c_str();
-                    request.value.value_float.push_back(std::stof(args.at(1)));
-                    printGetSetResponse(call(*client, node_id, request));
+                    // TODO: add support for string parameters
+                    request.value.to<uavcan::protocol::param::Value::Tag::real_value>() = std::stof(args.at(1));
+                    std::cout << call(*client, node_id, request) << std::endl;
                 }
             }
         }
@@ -185,11 +142,11 @@ const std::map<std::string,
     {
         "param_save",
         {
-            "Calls uavcan.protocol.param.SaveErase on a remote node with OPCODE_SAVE",
+            "Calls uavcan.protocol.param.ExecuteOpcode on a remote node with OPCODE_SAVE",
             [](const uavcan_linux::NodePtr& node, const uavcan::NodeID node_id, const std::vector<std::string>&)
             {
-                auto client = node->makeBlockingServiceClient<uavcan::protocol::param::SaveErase>();
-                uavcan::protocol::param::SaveErase::Request request;
+                auto client = node->makeBlockingServiceClient<uavcan::protocol::param::ExecuteOpcode>();
+                uavcan::protocol::param::ExecuteOpcode::Request request;
                 request.opcode = request.OPCODE_SAVE;
                 std::cout << call(*client, node_id, request) << std::endl;
             }
@@ -198,11 +155,11 @@ const std::map<std::string,
     {
         "param_erase",
         {
-            "Calls uavcan.protocol.param.SaveErase on a remote node with OPCODE_ERASE",
+            "Calls uavcan.protocol.param.ExecuteOpcode on a remote node with OPCODE_ERASE",
             [](const uavcan_linux::NodePtr& node, const uavcan::NodeID node_id, const std::vector<std::string>&)
             {
-                auto client = node->makeBlockingServiceClient<uavcan::protocol::param::SaveErase>();
-                uavcan::protocol::param::SaveErase::Request request;
+                auto client = node->makeBlockingServiceClient<uavcan::protocol::param::ExecuteOpcode>();
+                uavcan::protocol::param::ExecuteOpcode::Request request;
                 request.opcode = request.OPCODE_ERASE;
                 std::cout << call(*client, node_id, request) << std::endl;
             }
@@ -256,42 +213,12 @@ const std::map<std::string,
         {
             "Publishes uavcan.equipment.hardpoint.Command\n"
             "Expected argument: command",
-            [](const uavcan_linux::NodePtr& node, const uavcan::NodeID node_id, const std::vector<std::string>& args)
+            [](const uavcan_linux::NodePtr& node, const uavcan::NodeID, const std::vector<std::string>& args)
             {
                 uavcan::equipment::hardpoint::Command msg;
                 msg.command = std::stoi(args.at(0));
                 auto pub = node->makePublisher<uavcan::equipment::hardpoint::Command>();
-                if (node_id.isBroadcast())
-                {
-                    (void)pub->broadcast(msg);
-                }
-                else
-                {
-                    (void)pub->unicast(msg, node_id);
-                }
-            }
-        }
-    },
-    {
-        "enum",
-        {
-            "Publishes uavcan.protocol.EnumerationRequest\n"
-            "Expected arguments: node_id, timeout_sec (optional, defaults to 60)",
-            [](const uavcan_linux::NodePtr& node, const uavcan::NodeID node_id, const std::vector<std::string>& args)
-            {
-                uavcan::protocol::EnumerationRequest msg;
-                msg.node_id = std::stoi(args.at(0));
-                msg.timeout_sec = (args.size() > 1) ? std::stoi(args.at(1)) : 60;
-                std::cout << msg << std::endl;
-                auto pub = node->makePublisher<uavcan::protocol::EnumerationRequest>();
-                if (node_id.isBroadcast())
-                {
-                    (void)pub->broadcast(msg);
-                }
-                else
-                {
-                    (void)pub->unicast(msg, node_id);  // Unicasting an enumeration request - what a nonsense
-                }
+                (void)pub->broadcast(msg);
             }
         }
     }

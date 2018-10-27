@@ -11,35 +11,24 @@
 namespace uavcan
 {
 
-const uint32_t TransferReceiver::MinTransferIntervalUSec;
-const uint32_t TransferReceiver::MaxTransferIntervalUSec;
-const uint32_t TransferReceiver::DefaultTransferIntervalUSec;
-const uint8_t TransferReceiver::IfaceIndexNotSet;
+const uint16_t TransferReceiver::MinTransferIntervalMSec;
+const uint16_t TransferReceiver::MaxTransferIntervalMSec;
+const uint16_t TransferReceiver::DefaultTransferIntervalMSec;
+const uint16_t TransferReceiver::DefaultTidTimeoutMSec;
+
+MonotonicDuration TransferReceiver::getIfaceSwitchDelay() const
+{
+    return MonotonicDuration::fromMSec(transfer_interval_msec_);
+}
+
+MonotonicDuration TransferReceiver::getTidTimeout() const
+{
+    return MonotonicDuration::fromMSec(DefaultTidTimeoutMSec);
+}
 
 void TransferReceiver::registerError() const
 {
-    if (error_cnt_ < 0xFF)
-    {
-        error_cnt_ = static_cast<uint8_t>(error_cnt_ + 1);
-    }
-    else
-    {
-        UAVCAN_ASSERT(0);
-    }
-}
-
-TransferReceiver::TidRelation TransferReceiver::getTidRelation(const RxFrame& frame) const
-{
-    const int distance = tid_.computeForwardDistance(frame.getTransferID());
-    if (distance == 0)
-    {
-        return TidSame;
-    }
-    if (distance < ((1 << TransferID::BitLen) / 2))
-    {
-        return TidFuture;
-    }
-    return TidRepeat;
+    error_cnt_ = static_cast<uint8_t>(error_cnt_ + 1) & ErrorCntMask;
 }
 
 void TransferReceiver::updateTransferTimings()
@@ -51,17 +40,17 @@ void TransferReceiver::updateTransferTimings()
 
     if ((!prev_prev_ts.isZero()) && (!prev_transfer_ts_.isZero()) && (prev_transfer_ts_ >= prev_prev_ts))
     {
-        uint64_t interval_usec = uint64_t((prev_transfer_ts_ - prev_prev_ts).toUSec());
-        interval_usec = min(interval_usec, uint64_t(MaxTransferIntervalUSec));
-        interval_usec = max(interval_usec, uint64_t(MinTransferIntervalUSec));
-        transfer_interval_usec_ = static_cast<uint32_t>((uint64_t(transfer_interval_usec_) * 7 + interval_usec) / 8);
+        uint64_t interval_msec = uint64_t((prev_transfer_ts_ - prev_prev_ts).toMSec());
+        interval_msec = min(interval_msec, uint64_t(MaxTransferIntervalMSec));
+        interval_msec = max(interval_msec, uint64_t(MinTransferIntervalMSec));
+        transfer_interval_msec_ = static_cast<uint16_t>((uint64_t(transfer_interval_msec_) * 7U + interval_msec) / 8U);
     }
 }
 
 void TransferReceiver::prepareForNextTransfer()
 {
     tid_.increment();
-    next_frame_index_ = 0;
+    next_toggle_ = false;
     buffer_write_pos_ = 0;
 }
 
@@ -71,26 +60,31 @@ bool TransferReceiver::validate(const RxFrame& frame) const
     {
         return false;
     }
-    if (frame.isFirst() && !frame.isLast() && (frame.getPayloadLen() < TransferCRC::NumBytes))
+    if (frame.isStartOfTransfer() && !frame.isEndOfTransfer() && (frame.getPayloadLen() < TransferCRC::NumBytes))
     {
         UAVCAN_TRACE("TransferReceiver", "CRC expected, %s", frame.toString().c_str());
         registerError();
         return false;
     }
-    if ((frame.getIndex() == Frame::MaxIndex) && !frame.isLast())
+    if (frame.isStartOfTransfer() && frame.getToggle())
     {
-        UAVCAN_TRACE("TransferReceiver", "Unterminated transfer, %s", frame.toString().c_str());
+        UAVCAN_TRACE("TransferReceiver", "Toggle bit is not cleared, %s", frame.toString().c_str());
         registerError();
         return false;
     }
-    if (frame.getIndex() != next_frame_index_)
+    if (frame.isStartOfTransfer() && isMidTransfer())
     {
-        UAVCAN_TRACE("TransferReceiver", "Unexpected frame index (not %i), %s",
-                     int(next_frame_index_), frame.toString().c_str());
+        UAVCAN_TRACE("TransferReceiver", "Unexpected start of transfer, %s", frame.toString().c_str());
+        registerError();
+    }
+    if (frame.getToggle() != next_toggle_)
+    {
+        UAVCAN_TRACE("TransferReceiver", "Unexpected toggle bit (not %i), %s",
+                     int(next_toggle_), frame.toString().c_str());
         registerError();
         return false;
     }
-    if (getTidRelation(frame) != TidSame)
+    if (frame.getTransferID() != tid_)
     {
         UAVCAN_TRACE("TransferReceiver", "Unexpected TID (current %i), %s", tid_.get(), frame.toString().c_str());
         registerError();
@@ -104,7 +98,7 @@ bool TransferReceiver::writePayload(const RxFrame& frame, ITransferBuffer& buf)
     const uint8_t* const payload = frame.getPayloadPtr();
     const unsigned payload_len = frame.getPayloadLen();
 
-    if (frame.isFirst())     // First frame contains CRC, we need to extract it now
+    if (frame.isStartOfTransfer())     // First frame contains CRC, we need to extract it now
     {
         if (frame.getPayloadLen() < TransferCRC::NumBytes)
         {
@@ -137,13 +131,13 @@ bool TransferReceiver::writePayload(const RxFrame& frame, ITransferBuffer& buf)
 TransferReceiver::ResultCode TransferReceiver::receive(const RxFrame& frame, TransferBufferAccessor& tba)
 {
     // Transfer timestamps are derived from the first frame
-    if (frame.isFirst())
+    if (frame.isStartOfTransfer())
     {
         this_transfer_ts_ = frame.getMonotonicTimestamp();
         first_frame_ts_   = frame.getUtcTimestamp();
     }
 
-    if (frame.isFirst() && frame.isLast())
+    if (frame.isStartOfTransfer() && frame.isEndOfTransfer())
     {
         tba.remove();
         updateTransferTimings();
@@ -154,11 +148,11 @@ TransferReceiver::ResultCode TransferReceiver::receive(const RxFrame& frame, Tra
 
     // Payload write
     ITransferBuffer* buf = tba.access();
-    if (buf == NULL)
+    if (buf == UAVCAN_NULLPTR)
     {
         buf = tba.create();
     }
-    if (buf == NULL)
+    if (buf == UAVCAN_NULLPTR)
     {
         UAVCAN_TRACE("TransferReceiver", "Failed to access the buffer, %s", frame.toString().c_str());
         prepareForNextTransfer();
@@ -173,9 +167,9 @@ TransferReceiver::ResultCode TransferReceiver::receive(const RxFrame& frame, Tra
         registerError();
         return ResultNotComplete;
     }
-    next_frame_index_++;
+    next_toggle_ = !next_toggle_;
 
-    if (frame.isLast())
+    if (frame.isEndOfTransfer())
     {
         updateTransferTimings();
         prepareForNextTransfer();
@@ -186,12 +180,7 @@ TransferReceiver::ResultCode TransferReceiver::receive(const RxFrame& frame, Tra
 
 bool TransferReceiver::isTimedOut(MonotonicTime current_ts) const
 {
-    static const int64_t INTERVAL_MULT = (1 << TransferID::BitLen) / 2 + 1;
-    if (current_ts <= this_transfer_ts_)
-    {
-        return false;
-    }
-    return (current_ts - this_transfer_ts_).toUSec() > (int64_t(transfer_interval_usec_) * INTERVAL_MULT);
+    return (current_ts - this_transfer_ts_) > getTidTimeout();
 }
 
 TransferReceiver::ResultCode TransferReceiver::addFrame(const RxFrame& frame, TransferBufferAccessor& tba)
@@ -200,42 +189,42 @@ TransferReceiver::ResultCode TransferReceiver::addFrame(const RxFrame& frame, Tr
         (frame.getMonotonicTimestamp() < prev_transfer_ts_) ||
         (frame.getMonotonicTimestamp() < this_transfer_ts_))
     {
+        UAVCAN_TRACE("TransferReceiver", "Invalid frame, %s", frame.toString().c_str());
         return ResultNotComplete;
     }
 
     const bool not_initialized = !isInitialized();
-    const bool receiver_timed_out = isTimedOut(frame.getMonotonicTimestamp());
+    const bool tid_timed_out = isTimedOut(frame.getMonotonicTimestamp());
     const bool same_iface = frame.getIfaceIndex() == iface_index_;
-    const bool first_fame = frame.isFirst();
-    const TidRelation tid_rel = getTidRelation(frame);
-    const bool iface_timed_out =
-        (frame.getMonotonicTimestamp() - this_transfer_ts_).toUSec() > (int64_t(transfer_interval_usec_) * 2);
+    const bool first_frame = frame.isStartOfTransfer();
+    const bool non_wrapped_tid = tid_.computeForwardDistance(frame.getTransferID()) < TransferID::Half;
+    const bool not_previous_tid = frame.getTransferID().computeForwardDistance(tid_) > 1;
+    const bool iface_switch_allowed = (frame.getMonotonicTimestamp() - this_transfer_ts_) > getIfaceSwitchDelay();
 
     // FSM, the hard way
     const bool need_restart =
         (not_initialized) ||
-        (receiver_timed_out) ||
-        (same_iface && first_fame && (tid_rel == TidFuture)) ||
-        (iface_timed_out && first_fame && (tid_rel == TidFuture));
+        (tid_timed_out) ||
+        (same_iface && first_frame && not_previous_tid) ||
+        (iface_switch_allowed && first_frame && non_wrapped_tid);
 
     if (need_restart)
     {
-        const bool error = !not_initialized && !receiver_timed_out;
-        if (error)
+        if (!not_initialized && (tid_ != frame.getTransferID()))
         {
             registerError();
         }
-        UAVCAN_TRACE("TransferReceiver",
-                     "Restart [not_inited=%i, iface_timeout=%i, recv_timeout=%i, same_iface=%i, first_frame=%i, tid_rel=%i], %s",
-                     int(not_initialized), int(iface_timed_out), int(receiver_timed_out), int(same_iface),
-                     int(first_fame), int(tid_rel), frame.toString().c_str());
+        UAVCAN_TRACE("TransferReceiver", "Restart [ni=%d, isa=%d, tt=%d, si=%d, ff=%d, nwtid=%d, nptid=%d, tid=%d], %s",
+                     int(not_initialized), int(iface_switch_allowed), int(tid_timed_out), int(same_iface),
+                     int(first_frame), int(non_wrapped_tid), int(not_previous_tid), int(tid_.get()),
+                     frame.toString().c_str());
         tba.remove();
-        iface_index_ = frame.getIfaceIndex();
+        iface_index_ = frame.getIfaceIndex() & IfaceIndexMask;
         tid_ = frame.getTransferID();
-        next_frame_index_ = 0;
+        next_toggle_ = false;
         buffer_write_pos_ = 0;
         this_transfer_crc_ = 0;
-        if (!first_fame)
+        if (!first_frame)
         {
             tid_.increment();
             return ResultNotComplete;

@@ -2,7 +2,8 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_HELPERS_OSTREAM_HPP_INCLUDED
+#define UAVCAN_HELPERS_OSTREAM_HPP_INCLUDED
 
 #include <uavcan/util/templates.hpp>
 #include <cstdio>
@@ -37,7 +38,7 @@ public:
 };
 
 inline OStream& operator<<(OStream& s, long long x)          { std::printf("%lld", x);  return s; }
-inline OStream& operator<<(OStream& s, unsigned long long x) { std::printf("%llud", x); return s; }
+inline OStream& operator<<(OStream& s, unsigned long long x) { std::printf("%llu", x); return s; }
 
 inline OStream& operator<<(OStream& s, long x)           { std::printf("%ld", x); return s; }
 inline OStream& operator<<(OStream& s, unsigned long x)  { std::printf("%lu", x); return s; }
@@ -58,3 +59,5 @@ inline OStream& operator<<(OStream& s, const char* x) { std::printf("%s", x); re
 inline OStream& operator<<(OStream& s, OStream&(*manip)(OStream&)) { return manip(s); }
 
 }
+
+#endif // UAVCAN_HELPERS_OSTREAM_HPP_INCLUDED

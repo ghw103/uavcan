@@ -6,16 +6,17 @@
 #include <uavcan/node/service_server.hpp>
 #include <uavcan/util/method_binder.hpp>
 #include <root_ns_a/StringService.hpp>
+#include <root_ns_a/EmptyService.hpp>
 #include "../clock.hpp"
 #include "../transport/can/can.hpp"
 #include "test_node.hpp"
 
 
-struct ServerImpl
+struct StringServerImpl
 {
     const char* string_response;
 
-    ServerImpl(const char* string_response) : string_response(string_response) { }
+    StringServerImpl(const char* string_response) : string_response(string_response) { }
 
     void handleRequest(const uavcan::ReceivedDataStructure<root_ns_a::StringService::Request>& request,
                        root_ns_a::StringService::Response& response)
@@ -27,11 +28,27 @@ struct ServerImpl
         std::cout << response << std::endl;
     }
 
-    typedef uavcan::MethodBinder<ServerImpl*,
-        void (ServerImpl::*)(const uavcan::ReceivedDataStructure<root_ns_a::StringService::Request>&,
-                             root_ns_a::StringService::Response&)> Binder;
+    typedef uavcan::MethodBinder<StringServerImpl*,
+        void (StringServerImpl::*)(const uavcan::ReceivedDataStructure<root_ns_a::StringService::Request>&,
+                                   root_ns_a::StringService::Response&)> Binder;
 
-    Binder bind() { return Binder(this, &ServerImpl::handleRequest); }
+    Binder bind() { return Binder(this, &StringServerImpl::handleRequest); }
+};
+
+
+struct EmptyServerImpl
+{
+    void handleRequest(const uavcan::ReceivedDataStructure<root_ns_a::EmptyService::Request>& request,
+                       root_ns_a::EmptyService::Response&)
+    {
+        std::cout << request << std::endl;
+    }
+
+    typedef uavcan::MethodBinder<EmptyServerImpl*,
+        void (EmptyServerImpl::*)(const uavcan::ReceivedDataStructure<root_ns_a::EmptyService::Request>&,
+                                   root_ns_a::EmptyService::Response&)> Binder;
+
+    Binder bind() { return Binder(this, &EmptyServerImpl::handleRequest); }
 };
 
 
@@ -45,10 +62,10 @@ TEST(ServiceServer, Basic)
     CanDriverMock can_driver(1, clock_driver);
     TestNode node(can_driver, clock_driver, 1);
 
-    ServerImpl impl("456");
+    StringServerImpl impl("456");
 
     {
-        uavcan::ServiceServer<root_ns_a::StringService, ServerImpl::Binder> server(node);
+        uavcan::ServiceServer<root_ns_a::StringService, StringServerImpl::Binder> server(node);
 
         ASSERT_EQ(0, node.getDispatcher().getNumServiceRequestListeners());
         server.start(impl.bind());
@@ -59,13 +76,15 @@ TEST(ServiceServer, Basic)
          */
         for (uint8_t i = 0; i < 2; i++)
         {
-            // uint_fast16_t data_type_id, TransferType transfer_type, NodeID src_node_id, NodeID dst_node_id,
-            // uint_fast8_t frame_index, TransferID transfer_id, bool last_frame
             uavcan::Frame frame(root_ns_a::StringService::DefaultDataTypeID, uavcan::TransferTypeServiceRequest,
-                                uavcan::NodeID(uint8_t(i + 0x10)), 1, 0, i, true);
+                                uavcan::NodeID(uint8_t(i + 0x10)), 1, i);
 
             const uint8_t req[] = {'r', 'e', 'q', uint8_t(i + '0')};
             frame.setPayload(req, sizeof(req));
+
+            frame.setStartOfTransfer(true);
+            frame.setEndOfTransfer(true);
+            frame.setPriority(i);
 
             uavcan::RxFrame rx_frame(frame, clock_driver.getMonotonic(), clock_driver.getUtc(), 0);
             can_driver.ifaces[0].pushRx(rx_frame);
@@ -92,6 +111,7 @@ TEST(ServiceServer, Basic)
             ASSERT_EQ(i, fr.getTransferID().get());
             ASSERT_EQ(uavcan::TransferTypeServiceResponse, fr.getTransferType());
             ASSERT_EQ(i + 0x10, fr.getDstNodeID().get());
+            ASSERT_EQ(i, fr.getPriority().get());
 
             // Second frame
             ASSERT_TRUE(fr.parse(can_driver.ifaces[0].popTxFrame()));
@@ -110,4 +130,27 @@ TEST(ServiceServer, Basic)
         ASSERT_EQ(1, node.getDispatcher().getNumServiceRequestListeners());
     }
     ASSERT_EQ(0, node.getDispatcher().getNumServiceRequestListeners());
+}
+
+
+TEST(ServiceServer, Empty)
+{
+    // Manual type registration - we can't rely on the GDTR state
+    uavcan::GlobalDataTypeRegistry::instance().reset();
+    uavcan::DefaultDataTypeRegistrator<root_ns_a::EmptyService> _registrator;
+
+    SystemClockDriver clock_driver;
+    CanDriverMock can_driver(1, clock_driver);
+    TestNode node(can_driver, clock_driver, 1);
+
+    EmptyServerImpl impl;
+
+    uavcan::ServiceServer<root_ns_a::EmptyService, EmptyServerImpl::Binder> server(node);
+
+    std::cout << "sizeof(ServiceServer<root_ns_a::EmptyService, EmptyServerImpl::Binder>): "
+              << sizeof(uavcan::ServiceServer<root_ns_a::EmptyService, EmptyServerImpl::Binder>) << std::endl;
+
+    ASSERT_EQ(0, node.getDispatcher().getNumServiceRequestListeners());
+    ASSERT_GE(0, server.start(impl.bind()));
+    ASSERT_EQ(1, node.getDispatcher().getNumServiceRequestListeners());
 }

@@ -32,9 +32,12 @@ TEST(NodeStatusProvider, Basic)
     nsp.setName("superluminal_communication_unit");
     ASSERT_STREQ("superluminal_communication_unit", nsp.getName().c_str());
 
-    ASSERT_EQ(uavcan::protocol::NodeStatus::STATUS_INITIALIZING, nsp.getStatusCode());
-    nsp.setStatusOk();
-    ASSERT_EQ(uavcan::protocol::NodeStatus::STATUS_OK, nsp.getStatusCode());
+    ASSERT_EQ(uavcan::protocol::NodeStatus::HEALTH_OK, nsp.getHealth());
+    ASSERT_EQ(uavcan::protocol::NodeStatus::MODE_INITIALIZATION, nsp.getMode());
+    nsp.setHealthError();
+    nsp.setModeOperational();
+    ASSERT_EQ(uavcan::protocol::NodeStatus::HEALTH_ERROR, nsp.getHealth());
+    ASSERT_EQ(uavcan::protocol::NodeStatus::MODE_OPERATIONAL, nsp.getMode());
 
     // Will fail - types are not registered
     uavcan::GlobalDataTypeRegistry::instance().reset();
@@ -43,20 +46,19 @@ TEST(NodeStatusProvider, Basic)
     uavcan::GlobalDataTypeRegistry::instance().reset();
     uavcan::DefaultDataTypeRegistrator<uavcan::protocol::NodeStatus> _reg1;
     uavcan::DefaultDataTypeRegistrator<uavcan::protocol::GetNodeInfo> _reg2;
-    uavcan::DefaultDataTypeRegistrator<uavcan::protocol::GlobalDiscoveryRequest> _reg3;
     ASSERT_LE(0, nsp.startAndPublish());
 
     // Checking the publishing rate settings
-    ASSERT_EQ(uavcan::MonotonicDuration::fromMSec(uavcan::protocol::NodeStatus::MAX_PUBLICATION_PERIOD_MS),
-              nsp.getStatusPublishingPeriod());
+    ASSERT_EQ(uavcan::MonotonicDuration::fromMSec(uavcan::protocol::NodeStatus::MAX_BROADCASTING_PERIOD_MS),
+              nsp.getStatusPublicationPeriod());
 
-    nsp.setStatusPublishingPeriod(uavcan::MonotonicDuration());
-    ASSERT_EQ(uavcan::MonotonicDuration::fromMSec(uavcan::protocol::NodeStatus::MIN_PUBLICATION_PERIOD_MS),
-              nsp.getStatusPublishingPeriod());
+    nsp.setStatusPublicationPeriod(uavcan::MonotonicDuration());
+    ASSERT_EQ(uavcan::MonotonicDuration::fromMSec(uavcan::protocol::NodeStatus::MIN_BROADCASTING_PERIOD_MS),
+              nsp.getStatusPublicationPeriod());
 
-    nsp.setStatusPublishingPeriod(uavcan::MonotonicDuration::fromMSec(3600 * 1000 * 24));
-    ASSERT_EQ(uavcan::MonotonicDuration::fromMSec(uavcan::protocol::NodeStatus::MAX_PUBLICATION_PERIOD_MS),
-              nsp.getStatusPublishingPeriod());
+    nsp.setStatusPublicationPeriod(uavcan::MonotonicDuration::fromMSec(3600 * 1000 * 24));
+    ASSERT_EQ(uavcan::MonotonicDuration::fromMSec(uavcan::protocol::NodeStatus::MAX_BROADCASTING_PERIOD_MS),
+              nsp.getStatusPublicationPeriod());
 
     /*
      * Initial status publication
@@ -69,7 +71,23 @@ TEST(NodeStatusProvider, Basic)
     nodes.spinBoth(uavcan::MonotonicDuration::fromMSec(10));
 
     ASSERT_TRUE(status_sub.collector.msg.get());  // Was published at startup
-    ASSERT_EQ(uavcan::protocol::NodeStatus::STATUS_OK, status_sub.collector.msg->status_code);
+    ASSERT_EQ(uavcan::protocol::NodeStatus::HEALTH_ERROR, status_sub.collector.msg->health);
+    ASSERT_EQ(0, status_sub.collector.msg->vendor_specific_status_code);
+    ASSERT_GE(1, status_sub.collector.msg->uptime_sec);
+
+    /*
+     * Altering the vendor-specific status code, forcePublish()-ing it and checking the result
+     */
+    ASSERT_EQ(0, nsp.getVendorSpecificStatusCode());
+    nsp.setVendorSpecificStatusCode(1234);
+    ASSERT_EQ(1234, nsp.getVendorSpecificStatusCode());
+
+    ASSERT_LE(0, nsp.forcePublish());
+
+    nodes.spinBoth(uavcan::MonotonicDuration::fromMSec(10));
+
+    ASSERT_EQ(uavcan::protocol::NodeStatus::HEALTH_ERROR, status_sub.collector.msg->health);
+    ASSERT_EQ(1234, status_sub.collector.msg->vendor_specific_status_code);
     ASSERT_GE(1, status_sub.collector.msg->uptime_sec);
 
     /*
@@ -77,7 +95,7 @@ TEST(NodeStatusProvider, Basic)
      */
     ServiceClientWithCollector<uavcan::protocol::GetNodeInfo> gni_cln(nodes.b);
 
-    nsp.setStatusCritical();
+    nsp.setHealthCritical();
 
     ASSERT_FALSE(gni_cln.collector.result.get());  // No data yet
     ASSERT_LE(0, gni_cln.call(1, uavcan::protocol::GetNodeInfo::Request()));
@@ -86,31 +104,13 @@ TEST(NodeStatusProvider, Basic)
     ASSERT_TRUE(gni_cln.collector.result.get());   // Response must have been delivered
 
     ASSERT_TRUE(gni_cln.collector.result->isSuccessful());
-    ASSERT_EQ(1, gni_cln.collector.result->server_node_id.get());
+    ASSERT_EQ(1, gni_cln.collector.result->getCallID().server_node_id.get());
 
-    ASSERT_EQ(uavcan::protocol::NodeStatus::STATUS_CRITICAL, gni_cln.collector.result->response.status.status_code);
+    ASSERT_EQ(uavcan::protocol::NodeStatus::HEALTH_CRITICAL,
+              gni_cln.collector.result->getResponse().status.health);
 
-    ASSERT_TRUE(hwver == gni_cln.collector.result->response.hardware_version);
-    ASSERT_TRUE(swver == gni_cln.collector.result->response.software_version);
+    ASSERT_TRUE(hwver == gni_cln.collector.result->getResponse().hardware_version);
+    ASSERT_TRUE(swver == gni_cln.collector.result->getResponse().software_version);
 
-    ASSERT_EQ("superluminal_communication_unit", gni_cln.collector.result->response.name);
-
-    /*
-     * GlobalDiscoveryRequest
-     */
-    uavcan::Publisher<uavcan::protocol::GlobalDiscoveryRequest> gdr_pub(nodes.b);
-
-    status_sub.collector.msg.reset();
-    nodes.spinBoth(uavcan::MonotonicDuration::fromMSec(10));
-    ASSERT_FALSE(status_sub.collector.msg.get());                                // Nothing!
-
-    ASSERT_LE(0, gdr_pub.broadcast(uavcan::protocol::GlobalDiscoveryRequest()));
-
-    nsp.setStatusWarning();
-
-    status_sub.collector.msg.reset();
-    nodes.spinBoth(uavcan::MonotonicDuration::fromMSec(10));
-
-    ASSERT_TRUE(status_sub.collector.msg.get());
-    ASSERT_EQ(uavcan::protocol::NodeStatus::STATUS_WARNING, status_sub.collector.msg->status_code);
+    ASSERT_EQ("superluminal_communication_unit", gni_cln.collector.result->getResponse().name);
 }

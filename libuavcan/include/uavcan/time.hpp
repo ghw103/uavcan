@@ -2,10 +2,11 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_TIME_HPP_INCLUDED
+#define UAVCAN_TIME_HPP_INCLUDED
 
 #include <cstdio>
-#include <uavcan/stdint.hpp>
+#include <uavcan/std.hpp>
 #include <uavcan/build_config.hpp>
 #include <uavcan/util/templates.hpp>
 #include <uavcan/Timestamp.hpp>
@@ -199,14 +200,14 @@ public:
 
     UtcTime& operator=(const Timestamp& ts)
     {
-        *this = fromUSec(ts.husec * Timestamp::USEC_PER_LSB);
+        *this = fromUSec(ts.usec);
         return *this;
     }
 
     operator Timestamp() const
     {
         Timestamp ts;
-        ts.husec = toUSec() / Timestamp::USEC_PER_LSB;
+        ts.usec = toUSec();
         return ts;
     }
 };
@@ -222,7 +223,6 @@ const unsigned TimeBase<T, D>::StringBufSize;
 template <typename D>
 void DurationBase<D>::toString(char buf[StringBufSize]) const
 {
-    using namespace std; // For snprintf()
     char* ptr = buf;
     if (isNegative())
     {
@@ -237,7 +237,6 @@ void DurationBase<D>::toString(char buf[StringBufSize]) const
 template <typename T, typename D>
 void TimeBase<T, D>::toString(char buf[StringBufSize]) const
 {
-    using namespace std; // For snprintf()
     (void)snprintf(buf, StringBufSize, "%llu.%06lu",
                    static_cast<unsigned long long>(toUSec() / 1000000UL),
                    static_cast<unsigned long>(toUSec() % 1000000UL));
@@ -286,3 +285,5 @@ Stream& operator<<(Stream& s, const TimeBase<T, D>& t)
 }
 
 }
+
+#endif // UAVCAN_TIME_HPP_INCLUDED

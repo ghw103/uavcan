@@ -5,11 +5,12 @@
 #include <string>
 #include <gtest/gtest.h>
 #include <uavcan/transport/transfer.hpp>
+#include <uavcan/transport/crc.hpp>
 #include "../clock.hpp"
 #include "can/can.hpp"
 
 
-TEST(Frame, FrameParseCompile)
+TEST(Frame, MessageParseCompile)
 {
     using uavcan::Frame;
     using uavcan::CanFrame;
@@ -18,36 +19,45 @@ TEST(Frame, FrameParseCompile)
 
     Frame frame;
 
+    /*
+     * Priority
+     * Message Type ID
+     * Service Not Message
+     * Source Node ID
+     */
     const uint32_t can_id =
-        (2 << 0)   |      //    Transfer ID
-        (1 << 3)   |      //    Last Frame
-        (29 << 4)  |      //    Frame Index
-        (42 << 10) |      //    Source Node ID
-        (uavcan::TransferTypeMessageBroadcast << 17)  |
-        (456 << 19);      //    Data Type ID
+        (16 << 24) |    // Priority
+        (20000 << 8) |  // Message Type ID
+        (0 << 7) |      // Service Not Message
+        (42 << 0);      // Source Node ID
 
-    const std::string payload_string = "hello";
+    const std::string payload_string = "hello\xD4"; // SET = 110, TID = 20
 
     /*
      * Parse
      */
     // Invalid CAN frames
-    ASSERT_FALSE(frame.parse(CanFrame(can_id | CanFrame::FlagRTR, (const uint8_t*)"", 0)));
+    ASSERT_FALSE(frame.parse(CanFrame(can_id | CanFrame::FlagRTR, reinterpret_cast<const uint8_t*>(""), 0)));
     ASSERT_FALSE(frame.parse(makeCanFrame(can_id, payload_string, STD)));
 
     // Valid
     ASSERT_TRUE(frame.parse(makeCanFrame(can_id, payload_string, EXT)));
 
-    EXPECT_EQ(TransferID(2), frame.getTransferID());
-    EXPECT_TRUE(frame.isLast());
-    EXPECT_EQ(29, frame.getIndex());
+    EXPECT_EQ(TransferID(20), frame.getTransferID());
+    EXPECT_TRUE(frame.isStartOfTransfer());
+    EXPECT_TRUE(frame.isEndOfTransfer());
+    EXPECT_FALSE(frame.getToggle());
     EXPECT_EQ(uavcan::NodeID(42), frame.getSrcNodeID());
+    EXPECT_TRUE(frame.getDstNodeID().isBroadcast());
     EXPECT_EQ(uavcan::TransferTypeMessageBroadcast, frame.getTransferType());
-    EXPECT_EQ(456, frame.getDataTypeID().get());
+    EXPECT_EQ(20000, frame.getDataTypeID().get());
+    EXPECT_EQ(16, frame.getPriority().get());
 
-    EXPECT_EQ(payload_string.length(), frame.getPayloadLen());
+    EXPECT_EQ(payload_string.length() - 1, frame.getPayloadLen());
     EXPECT_TRUE(std::equal(frame.getPayloadPtr(), frame.getPayloadPtr() + frame.getPayloadLen(),
                            payload_string.begin()));
+
+    std::cout << frame.toString() << std::endl;
 
     /*
      * Compile
@@ -59,7 +69,166 @@ TEST(Frame, FrameParseCompile)
     ASSERT_EQ(can_frame, makeCanFrame(can_id, payload_string, EXT));
 
     EXPECT_EQ(payload_string.length(), can_frame.dlc);
-    EXPECT_TRUE(std::equal(can_frame.data, can_frame.data + can_frame.dlc, payload_string.begin()));
+    std::cout << can_frame.toString() << std::endl;
+    /*
+     * FUN FACT: comparison of uint8_t with char may fail on the character 0xD4 (depending on the locale),
+     * because it will be considered a Unicode character. Hence, we do reinterpret_cast<>.
+     */
+    EXPECT_TRUE(std::equal(can_frame.data, can_frame.data + can_frame.dlc,
+                           reinterpret_cast<const uint8_t*>(&payload_string[0])));
+
+    /*
+     * Comparison
+     */
+    ASSERT_FALSE(Frame() == frame);
+    ASSERT_TRUE(Frame() != frame);
+    frame = Frame();
+    ASSERT_TRUE(Frame() == frame);
+    ASSERT_FALSE(Frame() != frame);
+}
+
+
+TEST(Frame, ServiceParseCompile)
+{
+    using uavcan::Frame;
+    using uavcan::CanFrame;
+    using uavcan::TransferID;
+    using uavcan::TransferType;
+
+    Frame frame;
+
+    /*
+     * Priority
+     * Service Type ID
+     * Request Not Response
+     * Destination Node ID
+     * Service Not Message
+     * Source Node ID
+     */
+    const uint32_t can_id =
+        (31 << 24) |    // Priority
+        (200 << 16) |   // Service Type ID
+        (1 << 15) |     // Request Not Response
+        (0x42 << 8) |   // Destination Node ID
+        (1 << 7) |      // Service Not Message
+        (42 << 0);      // Source Node ID
+
+    const std::string payload_string = "hello\x6a"; // SET = 011, TID = 10
+
+    /*
+     * Parse
+     */
+    // Invalid CAN frames
+    ASSERT_FALSE(frame.parse(CanFrame(can_id | CanFrame::FlagRTR, reinterpret_cast<const uint8_t*>(""), 0)));
+    ASSERT_FALSE(frame.parse(makeCanFrame(can_id, payload_string, STD)));
+
+    // Valid
+    ASSERT_TRUE(frame.parse(makeCanFrame(can_id, payload_string, EXT)));
+
+    EXPECT_EQ(TransferID(10), frame.getTransferID());
+    EXPECT_FALSE(frame.isStartOfTransfer());
+    EXPECT_TRUE(frame.isEndOfTransfer());
+    EXPECT_TRUE(frame.getToggle());
+    EXPECT_EQ(uavcan::NodeID(42), frame.getSrcNodeID());
+    EXPECT_EQ(uavcan::NodeID(0x42), frame.getDstNodeID());
+    EXPECT_EQ(uavcan::TransferTypeServiceRequest, frame.getTransferType());
+    EXPECT_EQ(200, frame.getDataTypeID().get());
+    EXPECT_EQ(31, frame.getPriority().get());
+
+    EXPECT_EQ(payload_string.length(), frame.getPayloadLen() + 1);
+    EXPECT_TRUE(std::equal(frame.getPayloadPtr(), frame.getPayloadPtr() + frame.getPayloadLen(),
+                           reinterpret_cast<const uint8_t*>(&payload_string[0])));
+
+    std::cout << frame.toString() << std::endl;
+
+    /*
+     * Compile
+     */
+    CanFrame can_frame;
+    ASSERT_TRUE(frame.parse(makeCanFrame(can_id, payload_string, EXT)));
+
+    ASSERT_TRUE(frame.compile(can_frame));
+    ASSERT_EQ(can_frame, makeCanFrame(can_id, payload_string, EXT));
+
+    EXPECT_EQ(payload_string.length(), can_frame.dlc);
+    EXPECT_TRUE(std::equal(can_frame.data, can_frame.data + can_frame.dlc,
+                           reinterpret_cast<const uint8_t*>(&payload_string[0])));
+
+    /*
+     * Comparison
+     */
+    ASSERT_FALSE(Frame() == frame);
+    ASSERT_TRUE(Frame() != frame);
+    frame = Frame();
+    ASSERT_TRUE(Frame() == frame);
+    ASSERT_FALSE(Frame() != frame);
+}
+
+
+TEST(Frame, AnonymousParseCompile)
+{
+    using uavcan::Frame;
+    using uavcan::CanFrame;
+    using uavcan::TransferID;
+    using uavcan::TransferType;
+
+    Frame frame;
+
+    /*
+     * Priority
+     * Discriminator
+     * Message Type ID
+     * Service Not Message
+     * Source Node ID
+     */
+    const uint32_t can_id =
+        (16383 << 10) | // Discriminator
+        (1 << 8);       // Message Type ID
+
+    const std::string payload_string = "hello\xd4"; // SET = 110, TID = 20
+
+    uavcan::TransferCRC payload_crc;
+    payload_crc.add(reinterpret_cast<const uint8_t*>(payload_string.c_str()), unsigned(payload_string.length()));
+
+    /*
+     * Parse
+     */
+    ASSERT_TRUE(frame.parse(makeCanFrame(can_id, payload_string, EXT)));
+
+    EXPECT_EQ(TransferID(20), frame.getTransferID());
+    EXPECT_TRUE(frame.isStartOfTransfer());
+    EXPECT_TRUE(frame.isEndOfTransfer());
+    EXPECT_FALSE(frame.getToggle());
+    EXPECT_TRUE(frame.getSrcNodeID().isBroadcast());
+    EXPECT_TRUE(frame.getDstNodeID().isBroadcast());
+    EXPECT_EQ(uavcan::TransferTypeMessageBroadcast, frame.getTransferType());
+    EXPECT_EQ(1, frame.getDataTypeID().get());
+    EXPECT_EQ(0, frame.getPriority().get());
+
+    EXPECT_EQ(payload_string.length() - 1, frame.getPayloadLen());
+    EXPECT_TRUE(std::equal(frame.getPayloadPtr(), frame.getPayloadPtr() + frame.getPayloadLen(),
+                           reinterpret_cast<const uint8_t*>(&payload_string[0])));
+
+    std::cout << frame.toString() << std::endl;
+
+    /*
+     * Compile
+     */
+    const uint32_t DiscriminatorMask = 0x00FFFC00;
+    const uint32_t NoDiscriminatorMask = 0xFF0003FF;
+
+    CanFrame can_frame;
+    ASSERT_TRUE(frame.parse(makeCanFrame(can_id, payload_string, EXT)));
+
+    ASSERT_TRUE(frame.compile(can_frame));
+    ASSERT_EQ(can_id & NoDiscriminatorMask & uavcan::CanFrame::MaskExtID,
+              can_frame.id & NoDiscriminatorMask & uavcan::CanFrame::MaskExtID);
+
+    EXPECT_EQ(payload_string.length(), can_frame.dlc);
+    EXPECT_TRUE(std::equal(can_frame.data, can_frame.data + can_frame.dlc,
+                           reinterpret_cast<const uint8_t*>(&payload_string[0])));
+
+    EXPECT_EQ((can_frame.id & DiscriminatorMask & uavcan::CanFrame::MaskExtID) >> 10, payload_crc.get() & 16383);
 
     /*
      * Comparison
@@ -88,81 +257,49 @@ TEST(Frame, FrameParsing)
         can.data[i] = uint8_t(i | (i << 4));
     }
 
-    // CAN ID field order: Transfer ID, Last Frame, Frame Index, Source Node ID, Transfer Type, Data Type ID
+    /*
+     * Message CAN ID fields and offsets:
+     *   24 Priority
+     *   8  Message Type ID
+     *   7  Service Not Message (0)
+     *   0  Source Node ID
+     *
+     * Service CAN ID fields and offsets:
+     *   24 Priority
+     *   16 Service Type ID
+     *   15 Request Not Response
+     *   8  Destination Node ID
+     *   7  Service Not Message (1)
+     *   0  Source Node ID
+     */
 
     /*
-     * SFT broadcast
+     * SFT message broadcast
      */
     can.id = CanFrame::FlagEFF |
-             (2 << 0) | (1 << 3) | (0 << 4) | (42 << 10) | (uavcan::TransferTypeMessageBroadcast << 17) | (456 << 19);
+             (2 << 24) |
+             (456 << 8) |
+             (0 << 7) |
+             (42 << 0);
+
+    can.data[7] = 0xcf; // SET=110, TID=0
+
+    ASSERT_FALSE(frame.parse(can));
+    can.dlc = 8;
 
     ASSERT_TRUE(frame.parse(can));
-    ASSERT_TRUE(frame.isFirst());
-    ASSERT_TRUE(frame.isLast());
-    ASSERT_EQ(0, frame.getIndex());
+    EXPECT_TRUE(frame.isStartOfTransfer());
+    EXPECT_TRUE(frame.isEndOfTransfer());
+    EXPECT_FALSE(frame.getToggle());
+    ASSERT_EQ(2, frame.getPriority().get());
     ASSERT_EQ(NodeID(42), frame.getSrcNodeID());
     ASSERT_EQ(NodeID::Broadcast, frame.getDstNodeID());
     ASSERT_EQ(456, frame.getDataTypeID().get());
-    ASSERT_EQ(TransferID(2), frame.getTransferID());
+    ASSERT_EQ(TransferID(15), frame.getTransferID());
     ASSERT_EQ(uavcan::TransferTypeMessageBroadcast, frame.getTransferType());
-    ASSERT_EQ(sizeof(CanFrame::data), frame.getMaxPayloadLen());
 
-    /*
-     * SFT addressed
-     */
-    can.id = CanFrame::FlagEFF |
-             (2 << 0) | (1 << 3) | (0 << 4) | (42 << 10) | (uavcan::TransferTypeMessageUnicast << 17) | (456 << 19);
-
-    ASSERT_FALSE(frame.parse(can));  // No payload - failure
-
-    can.dlc = 1;
-    can.data[0] = 0xFF;
-    ASSERT_FALSE(frame.parse(can));   // Invalid first byte - failure
-
-    can.data[0] = 127;
-    ASSERT_TRUE(frame.parse(can));
-
-    ASSERT_TRUE(frame.isFirst());
-    ASSERT_TRUE(frame.isLast());
-    ASSERT_EQ(0, frame.getIndex());
-    ASSERT_EQ(NodeID(42), frame.getSrcNodeID());
-    ASSERT_EQ(NodeID(127), frame.getDstNodeID());
-    ASSERT_EQ(456, frame.getDataTypeID().get());
-    ASSERT_EQ(TransferID(2), frame.getTransferID());
-    ASSERT_EQ(uavcan::TransferTypeMessageUnicast, frame.getTransferType());
-    ASSERT_EQ(sizeof(CanFrame::data) - 1, frame.getMaxPayloadLen());
-
-    /*
-     * MFT invalid - unterminated transfer
-     */
-    can.id = CanFrame::FlagEFF |
-             (2 << 0) | (0 << 3) | (Frame::MaxIndex << 4) | (42 << 10) |
-             (uavcan::TransferTypeMessageUnicast << 17) | (456 << 19);
-
-    ASSERT_FALSE(frame.parse(can));
-
-    /*
-     * MFT invalid - invalid frame index
-     */
-    can.id = CanFrame::FlagEFF |
-             (2 << 0) | (0 << 3) | (63 << 4) | (42 << 10) | (uavcan::TransferTypeMessageUnicast << 17) | (456 << 19);
-
-    ASSERT_FALSE(frame.parse(can));
-
-    /*
-     * Malformed frames
-     */
-    can.id = CanFrame::FlagEFF |
-             (2 << 0) | (1 << 3) | (0 << 4) | (42 << 10) | (uavcan::TransferTypeMessageUnicast << 17) | (456 << 19);
-    can.dlc = 3;
-    can.data[0] = 42;
-    ASSERT_FALSE(frame.parse(can)); // Src == Dst Node ID
-    can.data[0] = 41;
-    ASSERT_TRUE(frame.parse(can));
-
-    can.id = CanFrame::FlagEFF | // cppcheck-suppress duplicateExpression
-             (2 << 0) | (1 << 3) | (0 << 4) | (0 << 10) | (uavcan::TransferTypeMessageUnicast << 17) | (456 << 19);
-    ASSERT_FALSE(frame.parse(can)); // Broadcast Src Node ID
+    // TODO: test service frames
+    // TODO: test malformed frames
 }
 
 
@@ -181,14 +318,16 @@ TEST(Frame, RxFrameParse)
 
     // Valid
     can_rx_frame.ts_mono = uavcan::MonotonicTime::fromUSec(1);  // Zero is not allowed
-    can_rx_frame.id =
-        CanFrame::FlagEFF |
-        (2 << 0)   |      //    Transfer ID
-        (1 << 3)   |      //    Last Frame
-        (29 << 4)  |      //    Frame Index
-        (42 << 10) |      //    Source Node ID
-        (uavcan::TransferTypeMessageBroadcast << 17)  |
-        (456 << 19);      //    Data Type ID
+    can_rx_frame.id = CanFrame::FlagEFF |
+        (2 << 24) |
+        (456 << 8) |
+        (0 << 7) |
+        (42 << 0);
+
+    ASSERT_FALSE(rx_frame.parse(can_rx_frame));
+
+    can_rx_frame.data[0] = 0xc0; // SOT, EOT
+    can_rx_frame.dlc = 1;
 
     ASSERT_TRUE(rx_frame.parse(can_rx_frame));
     ASSERT_EQ(1, rx_frame.getMonotonicTimestamp().toUSec());
@@ -197,7 +336,7 @@ TEST(Frame, RxFrameParse)
     can_rx_frame.ts_mono = tsMono(123);
     can_rx_frame.iface_index = 2;
 
-    Frame frame(456, uavcan::TransferTypeMessageBroadcast, 1, uavcan::NodeID::Broadcast, 0, 0);
+    Frame frame(456, uavcan::TransferTypeMessageBroadcast, 1, uavcan::NodeID::Broadcast, 0);
     ASSERT_TRUE(frame.compile(can_rx_frame));
 
     ASSERT_TRUE(rx_frame.parse(can_rx_frame));
@@ -215,13 +354,12 @@ TEST(Frame, FrameToString)
 
     // RX frame default
     RxFrame rx_frame;
-    EXPECT_EQ("dtid=65535 tt=4 snid=255 dnid=255 idx=0 last=0 tid=0 payload=[] ts_m=0.000000 ts_utc=0.000000 iface=0",
+    EXPECT_EQ("prio=255 dtid=65535 tt=3 snid=255 dnid=255 sot=0 eot=0 togl=0 tid=0 payload=[] ts_m=0.000000 ts_utc=0.000000 iface=0",
               rx_frame.toString());
 
     // RX frame max len
-    rx_frame = RxFrame(Frame(uavcan::DataTypeID::Max, uavcan::TransferTypeMessageUnicast,
-                             uavcan::NodeID::Max, uavcan::NodeID::Max - 1, Frame::MaxIndex,
-                             uavcan::TransferID::Max, true),
+    rx_frame = RxFrame(Frame(uavcan::DataTypeID::MaxPossibleDataTypeIDValue, uavcan::TransferTypeMessageBroadcast,
+                             uavcan::NodeID::Max, 0, uavcan::TransferID::Max),
                        uavcan::MonotonicTime::getMax(), uavcan::UtcTime::getMax(), 3);
 
     uint8_t data[8];
@@ -231,15 +369,21 @@ TEST(Frame, FrameToString)
     }
     rx_frame.setPayload(data, sizeof(data));
 
-    EXPECT_EQ("dtid=1023 tt=3 snid=127 dnid=126 idx=62 last=1 tid=7 payload=[00 01 02 03 04 05 06] "
+    rx_frame.setStartOfTransfer(true);
+    rx_frame.setEndOfTransfer(true);
+    rx_frame.flipToggle();
+    rx_frame.setPriority(uavcan::TransferPriority::NumericallyMax);
+
+    EXPECT_EQ("prio=31 dtid=65535 tt=2 snid=127 dnid=0 sot=1 eot=1 togl=1 tid=31 payload=[00 01 02 03 04 05 06] "
               "ts_m=18446744073709.551615 ts_utc=18446744073709.551615 iface=3",
               rx_frame.toString());
 
     // Plain frame default
     Frame frame;
-    EXPECT_EQ("dtid=65535 tt=4 snid=255 dnid=255 idx=0 last=0 tid=0 payload=[]", frame.toString());
+    EXPECT_EQ("prio=255 dtid=65535 tt=3 snid=255 dnid=255 sot=0 eot=0 togl=0 tid=0 payload=[]", frame.toString());
 
     // Plain frame max len
     frame = rx_frame;
-    EXPECT_EQ("dtid=1023 tt=3 snid=127 dnid=126 idx=62 last=1 tid=7 payload=[00 01 02 03 04 05 06]", frame.toString());
+    EXPECT_EQ("prio=31 dtid=65535 tt=2 snid=127 dnid=0 sot=1 eot=1 togl=1 tid=31 payload=[00 01 02 03 04 05 06]",
+              frame.toString());
 }

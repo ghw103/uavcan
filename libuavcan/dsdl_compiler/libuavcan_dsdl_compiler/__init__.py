@@ -14,7 +14,7 @@ It is based on the DSDL parsing package from pyuavcan.
 from __future__ import division, absolute_import, print_function, unicode_literals
 import sys, os, logging, errno, re
 from .pyratemp import Template
-from pyuavcan import dsdl
+from uavcan import dsdl
 
 # Python 2.7 compatibility
 try:
@@ -158,6 +158,8 @@ def type_to_cpp_type(t):
         return '::uavcan::Array< %s, %s, %d >' % (value_type, mode, t.max_size)
     elif t.category == t.CATEGORY_COMPOUND:
         return '::' + t.full_name.replace('.', '::')
+    elif t.category == t.CATEGORY_VOID:
+        return '::uavcan::IntegerSpec< %d, ::uavcan::SignednessUnsigned, ::uavcan::CastModeSaturate >' % t.bitlen
     else:
         raise DsdlCompilerException('Unknown type category: %s' % t.category)
 
@@ -165,6 +167,7 @@ def generate_one_type(template_expander, t):
     t.short_name = t.full_name.split('.')[-1]
     t.cpp_type_name = t.short_name + '_'
     t.cpp_full_type_name = '::' + t.full_name.replace('.', '::')
+    t.include_guard = t.full_name.replace('.', '_').upper() + '_HPP_INCLUDED'
 
     # Dependencies (no duplicates)
     def fields_includes(fields):
@@ -185,19 +188,28 @@ def generate_one_type(template_expander, t):
 
     # Attribute types
     def inject_cpp_types(attributes):
+        void_index = 0
         for a in attributes:
             a.cpp_type = type_to_cpp_type(a.type)
+            a.void = a.type.category == a.type.CATEGORY_VOID
+            if a.void:
+                assert not a.name
+                a.name = '_void_%d' % void_index
+                void_index += 1
 
     if t.kind == t.KIND_MESSAGE:
         inject_cpp_types(t.fields)
         inject_cpp_types(t.constants)
         t.all_attributes = t.fields + t.constants
+        t.union = t.union and len(t.fields)
     else:
         inject_cpp_types(t.request_fields)
         inject_cpp_types(t.request_constants)
         inject_cpp_types(t.response_fields)
         inject_cpp_types(t.response_constants)
         t.all_attributes = t.request_fields + t.request_constants + t.response_fields + t.response_constants
+        t.request_union = t.request_union and len(t.request_fields)
+        t.response_union = t.response_union and len(t.response_fields)
 
     # Constant properties
     def inject_constant_info(constants):
@@ -259,7 +271,7 @@ def make_template_expander(filename):
     template_text = re.sub(r'([^\$]{0,1})\$\{([^\}]+)\}', r'\1$!\2!$', template_text)
 
     # Flow control expression transformation: % foo: ==> <!--(foo)-->
-    template_text = re.sub(r'(?m)^(\ *)\%\ *([^\:]+?):{0,1}$', r'\1<!--(\2)-->', template_text)
+    template_text = re.sub(r'(?m)^(\ *)\%\ *(.+?):{0,1}$', r'\1<!--(\2)-->', template_text)
 
     # Block termination transformation: <!--(endfoo)--> ==> <!--(end)-->
     template_text = re.sub(r'\<\!--\(end[a-z]+\)--\>', r'<!--(end)-->', template_text)
@@ -281,6 +293,17 @@ def make_template_expander(filename):
     def expand(**args):
         # This function adds one indentation level (4 spaces); it will be used from the template
         args['indent'] = lambda text, idnt = '    ': idnt + text.replace('\n', '\n' + idnt)
+        # This function works like enumerate(), telling you whether the current item is the last one
+        def enum_last_value(iterable, start=0):
+            it = iter(iterable)
+            count = start
+            last = next(it)
+            for val in it:
+                yield count, False, last
+                last = val
+                count += 1
+            yield count, True, last
+        args['enum_last_value'] = enum_last_value
         return template(**args)
 
     return expand

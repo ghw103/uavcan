@@ -23,26 +23,26 @@ GlobalDataTypeRegistry::List* GlobalDataTypeRegistry::selectList(DataTypeKind ki
     else
     {
         UAVCAN_ASSERT(0);
-        return NULL;
+        return UAVCAN_NULLPTR;
     }
 }
 
-GlobalDataTypeRegistry::RegistResult GlobalDataTypeRegistry::remove(Entry* dtd)
+GlobalDataTypeRegistry::RegistrationResult GlobalDataTypeRegistry::remove(Entry* dtd)
 {
     if (!dtd)
     {
         UAVCAN_ASSERT(0);
-        return RegistResultInvalidParams;
+        return RegistrationResultInvalidParams;
     }
     if (isFrozen())
     {
-        return RegistResultFrozen;
+        return RegistrationResultFrozen;
     }
 
     List* list = selectList(dtd->descriptor.getKind());
     if (!list)
     {
-        return RegistResultInvalidParams;
+        return RegistrationResultInvalidParams;
     }
 
     list->remove(dtd);       // If this call came from regist<>(), that would be enough
@@ -56,25 +56,25 @@ GlobalDataTypeRegistry::RegistResult GlobalDataTypeRegistry::remove(Entry* dtd)
         }
         p = next;
     }
-    return RegistResultOk;
+    return RegistrationResultOk;
 }
 
-GlobalDataTypeRegistry::RegistResult GlobalDataTypeRegistry::registImpl(Entry* dtd)
+GlobalDataTypeRegistry::RegistrationResult GlobalDataTypeRegistry::registImpl(Entry* dtd)
 {
-    if (!dtd || (dtd->descriptor.getID() > DataTypeID::Max))
+    if (!dtd || !dtd->descriptor.isValid())
     {
         UAVCAN_ASSERT(0);
-        return RegistResultInvalidParams;
+        return RegistrationResultInvalidParams;
     }
     if (isFrozen())
     {
-        return RegistResultFrozen;
+        return RegistrationResultFrozen;
     }
 
     List* list = selectList(dtd->descriptor.getKind());
     if (!list)
     {
-        return RegistResultInvalidParams;
+        return RegistrationResultInvalidParams;
     }
 
     {   // Collision check
@@ -83,12 +83,12 @@ GlobalDataTypeRegistry::RegistResult GlobalDataTypeRegistry::registImpl(Entry* d
         {
             if (p->descriptor.getID() == dtd->descriptor.getID()) // ID collision
             {
-                return RegistResultCollision;
+                return RegistrationResultCollision;
             }
             if (!std::strncmp(p->descriptor.getFullName(), dtd->descriptor.getFullName(),
                               DataTypeDescriptor::MaxFullNameLen))                        // Name collision
             {
-                return RegistResultCollision;
+                return RegistrationResultCollision;
             }
             p = p->getNextListNode();
         }
@@ -122,7 +122,7 @@ GlobalDataTypeRegistry::RegistResult GlobalDataTypeRegistry::registImpl(Entry* d
         }
     }
 #endif
-    return RegistResultOk;
+    return RegistrationResultOk;
 }
 
 GlobalDataTypeRegistry& GlobalDataTypeRegistry::instance()
@@ -141,18 +141,28 @@ void GlobalDataTypeRegistry::freeze()
     }
 }
 
+const DataTypeDescriptor* GlobalDataTypeRegistry::find(const char* name) const
+{
+    const DataTypeDescriptor* desc = find(DataTypeKindMessage, name);
+    if (desc == UAVCAN_NULLPTR)
+    {
+        desc = find(DataTypeKindService, name);
+    }
+    return desc;
+}
+
 const DataTypeDescriptor* GlobalDataTypeRegistry::find(DataTypeKind kind, const char* name) const
 {
     if (!name)
     {
         UAVCAN_ASSERT(0);
-        return NULL;
+        return UAVCAN_NULLPTR;
     }
     const List* list = selectList(kind);
     if (!list)
     {
         UAVCAN_ASSERT(0);
-        return NULL;
+        return UAVCAN_NULLPTR;
     }
     Entry* p = list->get();
     while (p)
@@ -163,7 +173,7 @@ const DataTypeDescriptor* GlobalDataTypeRegistry::find(DataTypeKind kind, const 
         }
         p = p->getNextListNode();
     }
-    return NULL;
+    return UAVCAN_NULLPTR;
 }
 
 const DataTypeDescriptor* GlobalDataTypeRegistry::find(DataTypeKind kind, DataTypeID dtid) const
@@ -172,7 +182,7 @@ const DataTypeDescriptor* GlobalDataTypeRegistry::find(DataTypeKind kind, DataTy
     if (!list)
     {
         UAVCAN_ASSERT(0);
-        return NULL;
+        return UAVCAN_NULLPTR;
     }
     Entry* p = list->get();
     while (p)
@@ -183,78 +193,7 @@ const DataTypeDescriptor* GlobalDataTypeRegistry::find(DataTypeKind kind, DataTy
         }
         p = p->getNextListNode();
     }
-    return NULL;
-}
-
-DataTypeSignature GlobalDataTypeRegistry::computeAggregateSignature(DataTypeKind kind,
-                                                                    DataTypeIDMask& inout_id_mask) const
-{
-    UAVCAN_ASSERT(isFrozen());  // Computing the signature if the registry is not frozen is pointless
-
-    const List* list = selectList(kind);
-    if (!list)
-    {
-        UAVCAN_ASSERT(0);
-        return DataTypeSignature();
-    }
-
-    int prev_dtid = -1;
-    DataTypeSignature signature;
-    bool signature_initialized = false;
-    Entry* p = list->get();
-    while (p)
-    {
-        const DataTypeDescriptor& desc = p->descriptor;
-        const int dtid = desc.getID().get();
-
-        if (inout_id_mask[unsigned(dtid)])
-        {
-            if (signature_initialized)
-            {
-                signature.extend(desc.getSignature());
-            }
-            else
-            {
-                signature = DataTypeSignature(desc.getSignature());
-            }
-            signature_initialized = true;
-        }
-
-        UAVCAN_ASSERT(prev_dtid < dtid);  // Making sure that list is ordered properly
-        prev_dtid++;
-        while (prev_dtid < dtid)
-        {
-            inout_id_mask[unsigned(prev_dtid++)] = false; // Erasing bits for missing types
-        }
-        UAVCAN_ASSERT(prev_dtid == dtid);
-
-        p = p->getNextListNode();
-    }
-    prev_dtid++;
-    while (prev_dtid <= DataTypeID::Max)
-    {
-        inout_id_mask[unsigned(prev_dtid++)] = false;
-    }
-
-    return signature;
-}
-
-void GlobalDataTypeRegistry::getDataTypeIDMask(DataTypeKind kind, DataTypeIDMask& mask) const
-{
-    (void)mask.reset();
-    const List* list = selectList(kind);
-    if (!list)
-    {
-        UAVCAN_ASSERT(0);
-        return;
-    }
-    Entry* p = list->get();
-    while (p)
-    {
-        UAVCAN_ASSERT(p->descriptor.getKind() == kind);
-        mask[p->descriptor.getID().get()] = true;
-        p = p->getNextListNode();
-    }
+    return UAVCAN_NULLPTR;
 }
 
 }

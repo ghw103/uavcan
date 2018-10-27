@@ -3,11 +3,12 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_TRANSPORT_CAN_IO_HPP_INCLUDED
+#define UAVCAN_TRANSPORT_CAN_IO_HPP_INCLUDED
 
 #include <cassert>
 #include <uavcan/error.hpp>
-#include <uavcan/stdint.hpp>
+#include <uavcan/std.hpp>
 #include <uavcan/util/linked_list.hpp>
 #include <uavcan/dynamic_memory.hpp>
 #include <uavcan/build_config.hpp>
@@ -19,8 +20,6 @@
 
 namespace uavcan
 {
-
-enum { MaxCanIfaces = 3 };
 
 struct UAVCAN_EXPORT CanRxFrame : public CanFrame
 {
@@ -107,7 +106,9 @@ public:
 
     Entry* peek();               // Modifier
     void remove(Entry*& entry);
+    const CanFrame* getTopPriorityPendingFrame() const;
 
+    /// The 'or equal' condition is necessary to avoid frame reordering.
     bool topPriorityHigherOrEqual(const CanFrame& rhs_frame) const;
 
     uint32_t getRejectedFrameCount() const { return rejected_frames_cnt_; }
@@ -153,8 +154,8 @@ class UAVCAN_EXPORT CanIOManager : Noncopyable
 
     int sendToIface(uint8_t iface_index, const CanFrame& frame, MonotonicTime tx_deadline, CanIOFlags flags);
     int sendFromTxQueue(uint8_t iface_index);
-    uint8_t makePendingTxMask() const;
-    int callSelect(CanSelectMasks& inout_masks, MonotonicTime blocking_deadline);
+    int callSelect(CanSelectMasks& inout_masks, const CanFrame* (& pending_tx)[MaxCanIfaces],
+                   MonotonicTime blocking_deadline);
 
 public:
     CanIOManager(ICanDriver& driver, IPoolAllocator& allocator, ISystemClock& sysclock,
@@ -166,6 +167,8 @@ public:
 
     const ICanDriver& getCanDriver() const { return driver_; }
     ICanDriver& getCanDriver()             { return driver_; }
+
+    uint8_t makePendingTxMask() const;
 
     /**
      * Returns:
@@ -179,3 +182,5 @@ public:
 };
 
 }
+
+#endif // UAVCAN_TRANSPORT_CAN_IO_HPP_INCLUDED

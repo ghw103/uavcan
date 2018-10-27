@@ -2,7 +2,8 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_UTIL_MAP_HPP_INCLUDED
+#define UAVCAN_UTIL_MAP_HPP_INCLUDED
 
 #include <cassert>
 #include <cstdlib>
@@ -10,15 +11,14 @@
 #include <uavcan/build_config.hpp>
 #include <uavcan/dynamic_memory.hpp>
 #include <uavcan/util/templates.hpp>
+#include <uavcan/util/placement_new.hpp>
 
 namespace uavcan
 {
 /**
  * Slow but memory efficient KV container.
  *
- * KV pairs can be allocated in a static buffer or in the node's memory pool if the static buffer is exhausted.
- * When a KV pair is deleted from the static buffer, one pair from the memory pool will be moved in the free
- * slot of the static buffer, so the use of the memory pool is minimized.
+ * KV pairs will be allocated in the node's memory pool.
  *
  * Please be aware that this container does not perform any speed optimizations to minimize memory footprint,
  * so the complexity of most operations is O(N).
@@ -30,23 +30,28 @@ namespace uavcan
  *  Size of Key + Value + padding must not exceed MemPoolBlockSize.
  */
 template <typename Key, typename Value>
-class UAVCAN_EXPORT MapBase : Noncopyable
+class UAVCAN_EXPORT Map : Noncopyable
 {
-    template <typename, typename, unsigned> friend class Map;
-
-    UAVCAN_PACKED_BEGIN
+public:
     struct KVPair
     {
+        Value value;    // Key and value are swapped because this may allow to reduce padding (depending on types)
         Key key;
-        Value value;
-        KVPair() { }
-        KVPair(const Key& arg_key, const Value& arg_value)
-            : key(arg_key)
-            , value(arg_value)
+
+        KVPair() :
+            value(),
+            key()
         { }
+
+        KVPair(const Key& arg_key, const Value& arg_value) :
+            value(arg_value),
+            key(arg_key)
+        { }
+
         bool match(const Key& rhs) const { return rhs == key; }
     };
 
+private:
     struct KVGroup : LinkedListNode<KVGroup>
     {
         enum { NumKV = (MemPoolBlockSize - sizeof(LinkedListNode<KVGroup>)) / sizeof(KVPair) };
@@ -61,20 +66,20 @@ class UAVCAN_EXPORT MapBase : Noncopyable
         static KVGroup* instantiate(IPoolAllocator& allocator)
         {
             void* const praw = allocator.allocate(sizeof(KVGroup));
-            if (praw == NULL)
+            if (praw == UAVCAN_NULLPTR)
             {
-                return NULL;
+                return UAVCAN_NULLPTR;
             }
             return new (praw) KVGroup();
         }
 
         static void destroy(KVGroup*& obj, IPoolAllocator& allocator)
         {
-            if (obj != NULL)
+            if (obj != UAVCAN_NULLPTR)
             {
                 obj->~KVGroup();
                 allocator.deallocate(obj);
-                obj = NULL;
+                obj = UAVCAN_NULLPTR;
             }
         }
 
@@ -87,51 +92,34 @@ class UAVCAN_EXPORT MapBase : Noncopyable
                     return kvs + i;
                 }
             }
-            return NULL;
+            return UAVCAN_NULLPTR;
         }
     };
-    UAVCAN_PACKED_END
 
     LinkedListRoot<KVGroup> list_;
     IPoolAllocator& allocator_;
-#if !UAVCAN_TINY
-    KVPair* const static_;
-    const unsigned num_static_entries_;
-#endif
 
-    KVPair* find(const Key& key);
+    KVPair* findKey(const Key& key);
 
-#if !UAVCAN_TINY
-    void optimizeStorage();
-#endif
     void compact();
 
     struct YesPredicate
     {
-        bool operator()(const Key& k, const Value& v) const { (void)k; (void)v; return true; }
+        bool operator()(const Key&, const Value&) const { return true; }
     };
 
-protected:
-#if UAVCAN_TINY
-    MapBase(IPoolAllocator& allocator)
-        : allocator_(allocator)
-    {
-        UAVCAN_ASSERT(Key() == Key());
-    }
-#else
-    MapBase(KVPair* static_buf, unsigned num_static_entries, IPoolAllocator& allocator)
-        : allocator_(allocator)
-        , static_(static_buf)
-        , num_static_entries_(num_static_entries)
-    {
-        UAVCAN_ASSERT(Key() == Key());
-    }
-#endif
-
-    /// Derived class destructor must call removeAll();
-    ~MapBase() { }
-
 public:
+    Map(IPoolAllocator& allocator) :
+        allocator_(allocator)
+    {
+        UAVCAN_ASSERT(Key() == Key());
+    }
+
+    ~Map()
+    {
+        clear();
+    }
+
     /**
      * Returns null pointer if there's no such entry.
      */
@@ -150,10 +138,10 @@ public:
     /**
      * Removes entries where the predicate returns true.
      * Predicate prototype:
-     *  bool (const Key& key, const Value& value)
+     *  bool (Key& key, Value& value)
      */
     template <typename Predicate>
-    void removeWhere(Predicate predicate);
+    void removeAllWhere(Predicate predicate);
 
     /**
      * Returns first entry where the predicate returns true.
@@ -161,73 +149,40 @@ public:
      *  bool (const Key& key, const Value& value)
      */
     template <typename Predicate>
-    const Key* findFirstKey(Predicate predicate) const;
+    const Key* find(Predicate predicate) const;
 
-    void removeAll();
+    /**
+     * Removes all items.
+     */
+    void clear();
 
-    bool isEmpty() const;
+    /**
+     * Returns a key-value pair located at the specified position from the beginning.
+     * Note that any insertion or deletion may greatly disturb internal ordering, so use with care.
+     * If index is greater than or equal the number of pairs, null pointer will be returned.
+     */
+    KVPair* getByIndex(unsigned index);
+    const KVPair* getByIndex(unsigned index) const;
 
-    /// For testing
-    unsigned getNumStaticPairs() const;
+    /**
+     * Complexity is O(1).
+     */
+    bool isEmpty() const { return find(YesPredicate()) == UAVCAN_NULLPTR; }
 
-    /// For testing
-    unsigned getNumDynamicPairs() const;
-};
-
-
-template <typename Key, typename Value, unsigned NumStaticEntries = 0>
-class UAVCAN_EXPORT Map : public MapBase<Key, Value>
-{
-    typename MapBase<Key, Value>::KVPair static_[NumStaticEntries];
-
-public:
-
-#if !UAVCAN_TINY
-
-    // This instantiation will not be valid in UAVCAN_TINY mode
-    explicit Map(IPoolAllocator& allocator)
-        : MapBase<Key, Value>(static_, NumStaticEntries, allocator)
-    { }
-
-    ~Map() { this->removeAll(); }
-
-#endif // !UAVCAN_TINY
-};
-
-
-template <typename Key, typename Value>
-class UAVCAN_EXPORT Map<Key, Value, 0> : public MapBase<Key, Value>
-{
-public:
-    explicit Map(IPoolAllocator& allocator)
-#if UAVCAN_TINY
-        : MapBase<Key, Value>(allocator)
-#else
-        : MapBase<Key, Value>(NULL, 0, allocator)
-#endif
-    { }
-
-    ~Map() { this->removeAll(); }
+    /**
+     * Complexity is O(N).
+     */
+    unsigned getSize() const;
 };
 
 // ----------------------------------------------------------------------------
 
 /*
- * MapBase<>
+ * Map<>
  */
 template <typename Key, typename Value>
-typename MapBase<Key, Value>::KVPair* MapBase<Key, Value>::find(const Key& key)
+typename Map<Key, Value>::KVPair* Map<Key, Value>::findKey(const Key& key)
 {
-#if !UAVCAN_TINY
-    for (unsigned i = 0; i < num_static_entries_; i++)
-    {
-        if (static_[i].match(key))
-        {
-            return static_ + i;
-        }
-    }
-#endif
-
     KVGroup* p = list_.get();
     while (p)
     {
@@ -238,67 +193,11 @@ typename MapBase<Key, Value>::KVPair* MapBase<Key, Value>::find(const Key& key)
         }
         p = p->getNextListNode();
     }
-    return NULL;
+    return UAVCAN_NULLPTR;
 }
 
-#if !UAVCAN_TINY
-
 template <typename Key, typename Value>
-void MapBase<Key, Value>::optimizeStorage()
-{
-    while (true)
-    {
-        // Looking for first EMPTY static entry
-        KVPair* stat = NULL;
-        for (unsigned i = 0; i < num_static_entries_; i++)
-        {
-            if (static_[i].match(Key()))
-            {
-                stat = static_ + i;
-                break;
-            }
-        }
-        if (stat == NULL)
-        {
-            break;
-        }
-
-        // Looking for the first NON-EMPTY dynamic entry, erasing immediately
-        KVGroup* p = list_.get();
-        KVPair dyn;
-        while (p)
-        {
-            bool stop = false;
-            for (int i = 0; i < KVGroup::NumKV; i++)
-            {
-                if (!p->kvs[i].match(Key())) // Non empty
-                {
-                    dyn = p->kvs[i];         // Copy by value
-                    p->kvs[i] = KVPair();    // Erase immediately
-                    stop = true;
-                    break;
-                }
-            }
-            if (stop)
-            {
-                break;
-            }
-            p = p->getNextListNode();
-        }
-        if (dyn.match(Key()))
-        {
-            break;
-        }
-
-        // Migrating
-        *stat = dyn;
-    }
-}
-
-#endif // !UAVCAN_TINY
-
-template <typename Key, typename Value>
-void MapBase<Key, Value>::compact()
+void Map<Key, Value>::compact()
 {
     KVGroup* p = list_.get();
     while (p)
@@ -323,20 +222,20 @@ void MapBase<Key, Value>::compact()
 }
 
 template <typename Key, typename Value>
-Value* MapBase<Key, Value>::access(const Key& key)
+Value* Map<Key, Value>::access(const Key& key)
 {
     UAVCAN_ASSERT(!(key == Key()));
-    KVPair* const kv = find(key);
-    return kv ? &kv->value : NULL;
+    KVPair* const kv = findKey(key);
+    return kv ? &kv->value : UAVCAN_NULLPTR;
 }
 
 template <typename Key, typename Value>
-Value* MapBase<Key, Value>::insert(const Key& key, const Value& value)
+Value* Map<Key, Value>::insert(const Key& key, const Value& value)
 {
     UAVCAN_ASSERT(!(key == Key()));
     remove(key);
 
-    KVPair* const kv = find(Key());
+    KVPair* const kv = findKey(Key());
     if (kv)
     {
         *kv = KVPair(key, value);
@@ -344,9 +243,9 @@ Value* MapBase<Key, Value>::insert(const Key& key, const Value& value)
     }
 
     KVGroup* const kvg = KVGroup::instantiate(allocator_);
-    if (kvg == NULL)
+    if (kvg == UAVCAN_NULLPTR)
     {
-        return NULL;
+        return UAVCAN_NULLPTR;
     }
     list_.insert(kvg);
     kvg->kvs[0] = KVPair(key, value);
@@ -354,43 +253,28 @@ Value* MapBase<Key, Value>::insert(const Key& key, const Value& value)
 }
 
 template <typename Key, typename Value>
-void MapBase<Key, Value>::remove(const Key& key)
+void Map<Key, Value>::remove(const Key& key)
 {
     UAVCAN_ASSERT(!(key == Key()));
-    KVPair* const kv = find(key);
+    KVPair* const kv = findKey(key);
     if (kv)
     {
         *kv = KVPair();
-#if !UAVCAN_TINY
-        optimizeStorage();
-#endif
         compact();
     }
 }
 
 template <typename Key, typename Value>
 template <typename Predicate>
-void MapBase<Key, Value>::removeWhere(Predicate predicate)
+void Map<Key, Value>::removeAllWhere(Predicate predicate)
 {
     unsigned num_removed = 0;
 
-#if !UAVCAN_TINY
-    for (unsigned i = 0; i < num_static_entries_; i++)
-    {
-        if (!static_[i].match(Key()))
-        {
-            if (predicate(static_[i].key, static_[i].value))
-            {
-                num_removed++;
-                static_[i] = KVPair();
-            }
-        }
-    }
-#endif
-
     KVGroup* p = list_.get();
-    while (p)
+    while (p != UAVCAN_NULLPTR)
     {
+        KVGroup* const next_group = p->getNextListNode();
+
         for (int i = 0; i < KVGroup::NumKV; i++)
         {
             const KVPair* const kv = p->kvs + i;
@@ -403,38 +287,25 @@ void MapBase<Key, Value>::removeWhere(Predicate predicate)
                 }
             }
         }
-        p = p->getNextListNode();
+
+        p = next_group;
     }
 
     if (num_removed > 0)
     {
-#if !UAVCAN_TINY
-        optimizeStorage();
-#endif
         compact();
     }
 }
 
 template <typename Key, typename Value>
 template <typename Predicate>
-const Key* MapBase<Key, Value>::findFirstKey(Predicate predicate) const
+const Key* Map<Key, Value>::find(Predicate predicate) const
 {
-#if !UAVCAN_TINY
-    for (unsigned i = 0; i < num_static_entries_; i++)
-    {
-        if (!static_[i].match(Key()))
-        {
-            if (predicate(static_[i].key, static_[i].value))
-            {
-                return &static_[i].key;
-            }
-        }
-    }
-#endif
-
     KVGroup* p = list_.get();
-    while (p)
+    while (p != UAVCAN_NULLPTR)
     {
+        KVGroup* const next_group = p->getNextListNode();
+
         for (int i = 0; i < KVGroup::NumKV; i++)
         {
             const KVPair* const kv = p->kvs + i;
@@ -446,41 +317,54 @@ const Key* MapBase<Key, Value>::findFirstKey(Predicate predicate) const
                 }
             }
         }
-        p = p->getNextListNode();
+
+        p = next_group;
     }
-    return NULL;
+    return UAVCAN_NULLPTR;
 }
 
 template <typename Key, typename Value>
-void MapBase<Key, Value>::removeAll()
+void Map<Key, Value>::clear()
 {
-    removeWhere(YesPredicate());
+    removeAllWhere(YesPredicate());
 }
 
 template <typename Key, typename Value>
-bool MapBase<Key, Value>::isEmpty() const
+typename Map<Key, Value>::KVPair* Map<Key, Value>::getByIndex(unsigned index)
 {
-    return (getNumStaticPairs() == 0) && (getNumDynamicPairs() == 0);
-}
-
-template <typename Key, typename Value>
-unsigned MapBase<Key, Value>::getNumStaticPairs() const
-{
-    unsigned num = 0;
-#if !UAVCAN_TINY
-    for (unsigned i = 0; i < num_static_entries_; i++)
+    // Slowly crawling through the dynamic storage
+    KVGroup* p = list_.get();
+    while (p != UAVCAN_NULLPTR)
     {
-        if (!static_[i].match(Key()))
+        KVGroup* const next_group = p->getNextListNode();
+
+        for (int i = 0; i < KVGroup::NumKV; i++)
         {
-            num++;
+            KVPair* const kv = p->kvs + i;
+            if (!kv->match(Key()))
+            {
+                if (index == 0)
+                {
+                    return kv;
+                }
+                index--;
+            }
         }
+
+        p = next_group;
     }
-#endif
-    return num;
+
+    return UAVCAN_NULLPTR;
 }
 
 template <typename Key, typename Value>
-unsigned MapBase<Key, Value>::getNumDynamicPairs() const
+const typename Map<Key, Value>::KVPair* Map<Key, Value>::getByIndex(unsigned index) const
+{
+    return const_cast<Map<Key, Value>*>(this)->getByIndex(index);
+}
+
+template <typename Key, typename Value>
+unsigned Map<Key, Value>::getSize() const
 {
     unsigned num = 0;
     KVGroup* p = list_.get();
@@ -500,3 +384,5 @@ unsigned MapBase<Key, Value>::getNumDynamicPairs() const
 }
 
 }
+
+#endif // UAVCAN_UTIL_MAP_HPP_INCLUDED

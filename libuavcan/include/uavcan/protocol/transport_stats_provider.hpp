@@ -2,8 +2,10 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_PROTOCOL_TRANSPORT_STATS_PROVIDER_HPP_INCLUDED
+#define UAVCAN_PROTOCOL_TRANSPORT_STATS_PROVIDER_HPP_INCLUDED
 
+#include <uavcan/build_config.hpp>
 #include <uavcan/node/service_server.hpp>
 #include <uavcan/util/method_binder.hpp>
 #include <uavcan/protocol/GetTransportStats.hpp>
@@ -24,7 +26,24 @@ class UAVCAN_EXPORT TransportStatsProvider : Noncopyable
     ServiceServer<protocol::GetTransportStats, GetTransportStatsCallback> srv_;
 
     void handleGetTransportStats(const protocol::GetTransportStats::Request&,
-                                 protocol::GetTransportStats::Response& resp) const;
+                                 protocol::GetTransportStats::Response& resp) const
+    {
+        const TransferPerfCounter& perf = srv_.getNode().getDispatcher().getTransferPerfCounter();
+        resp.transfer_errors = perf.getErrorCount();
+        resp.transfers_tx = perf.getTxTransferCount();
+        resp.transfers_rx = perf.getRxTransferCount();
+
+        const CanIOManager& canio = srv_.getNode().getDispatcher().getCanIOManager();
+        for (uint8_t i = 0; i < canio.getNumIfaces(); i++)
+        {
+            const CanIfacePerfCounters can_perf = canio.getIfacePerfCounters(i);
+            protocol::CANIfaceStats stats;
+            stats.errors = can_perf.errors;
+            stats.frames_tx = can_perf.frames_tx;
+            stats.frames_rx = can_perf.frames_rx;
+            resp.can_iface_stats.push_back(stats);
+        }
+    }
 
 public:
     explicit TransportStatsProvider(INode& node)
@@ -35,7 +54,12 @@ public:
      * Once started, this class requires no further attention.
      * Returns negative error code.
      */
-    int start();
+    int start()
+    {
+        return srv_.start(GetTransportStatsCallback(this, &TransportStatsProvider::handleGetTransportStats));
+    }
 };
 
 }
+
+#endif // UAVCAN_PROTOCOL_TRANSPORT_STATS_PROVIDER_HPP_INCLUDED

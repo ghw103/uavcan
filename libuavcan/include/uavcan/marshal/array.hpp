@@ -2,7 +2,8 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_MARSHAL_ARRAY_HPP_INCLUDED
+#define UAVCAN_MARSHAL_ARRAY_HPP_INCLUDED
 
 #include <cassert>
 #include <cstdio>
@@ -14,6 +15,7 @@
 #include <uavcan/build_config.hpp>
 #include <uavcan/marshal/type_util.hpp>
 #include <uavcan/marshal/integer_spec.hpp>
+#include <uavcan/std.hpp>
 
 #ifndef UAVCAN_CPP_VERSION
 # error UAVCAN_CPP_VERSION
@@ -32,17 +34,150 @@ namespace uavcan
 
 enum ArrayMode { ArrayModeStatic, ArrayModeDynamic };
 
+/**
+ * Properties of a square matrix; assuming row-major representation.
+ */
+template <unsigned NumElements_>
+struct SquareMatrixTraits
+{
+    enum { NumElements = NumElements_ };
+
+    enum { NumRowsCols = CompileTimeIntSqrt<NumElements>::Result };
+
+    enum { NumElementsInTriangle = ((1 + NumRowsCols) * NumRowsCols) / 2 };
+
+    static inline bool isIndexOnDiagonal(unsigned index) { return (index / NumRowsCols) == (index % NumRowsCols); }
+
+    static inline int computeElementIndexAtRowCol(int row, int col) { return row * NumRowsCols + col; }
+};
+
+/**
+ * This class can be used to detect properties of square matrices.
+ * Element iterator is a random access forward constant iterator.
+ */
+template <typename ElementIterator, unsigned NumElements>
+class SquareMatrixAnalyzer : public SquareMatrixTraits<NumElements>
+{
+    typedef SquareMatrixTraits<NumElements> Traits;
+
+    const ElementIterator first_;
+
+public:
+    enum PackingMode
+    {
+        PackingModeEmpty,
+        PackingModeScalar,
+        PackingModeDiagonal,
+        PackingModeSymmetric,
+        PackingModeFull
+    };
+
+    SquareMatrixAnalyzer(ElementIterator first_element_iterator)
+        : first_(first_element_iterator)
+    {
+        StaticAssert<(NumElements > 0)>::check();
+    }
+
+    ElementIterator accessElementAtRowCol(int row, int col) const
+    {
+        return first_ + Traits::computeElementIndexAtRowCol(row, col);
+    }
+
+    bool areAllElementsNan() const
+    {
+        unsigned index = 0;
+        for (ElementIterator it = first_; index < NumElements; ++it, ++index)
+        {
+            if (!isNaN(*it))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool isScalar() const
+    {
+        unsigned index = 0;
+        for (ElementIterator it = first_; index < NumElements; ++it, ++index)
+        {
+            if (!Traits::isIndexOnDiagonal(index) && !isCloseToZero(*it))
+            {
+                return false;
+            }
+            if (Traits::isIndexOnDiagonal(index) && !areClose(*it, *first_))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool isDiagonal() const
+    {
+        unsigned index = 0;
+        for (ElementIterator it = first_; index < NumElements; ++it, ++index)
+        {
+            if (!Traits::isIndexOnDiagonal(index) && !isCloseToZero(*it))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool isSymmetric() const
+    {
+        for (int i = 0; i < Traits::NumRowsCols; ++i)
+        {
+            for (int k = 0; k < Traits::NumRowsCols; ++k)
+            {
+                // On diagonal comparison is pointless
+                if ((i != k) &&
+                    !areClose(*accessElementAtRowCol(i, k),
+                              *accessElementAtRowCol(k, i)))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    PackingMode detectOptimalPackingMode() const
+    {
+        if (areAllElementsNan())
+        {
+            return PackingModeEmpty;
+        }
+        if (isScalar())
+        {
+            return PackingModeScalar;
+        }
+        if (isDiagonal())
+        {
+            return PackingModeDiagonal;
+        }
+        if (isSymmetric())
+        {
+            return PackingModeSymmetric;
+        }
+        return PackingModeFull;
+    }
+};
+
 
 template <unsigned Size>
 class UAVCAN_EXPORT StaticArrayBase
 {
 protected:
-    typedef IntegerSpec<IntegerBitLen<Size>::Result, SignednessUnsigned, CastModeSaturate> RawSizeType;
+    typedef IntegerSpec<IntegerBitLen<Size>::Result, SignednessUnsigned, CastModeSaturate> RawEncodedSizeType;
 
 public:
     enum { SizeBitLen = 0 };
 
-    typedef typename StorageType<RawSizeType>::Type SizeType;
+    typedef typename StorageType<IntegerSpec<IntegerBitLen<EnumMax<Size, 2>::Result>::Result,
+                                             SignednessUnsigned, CastModeSaturate> >::Type SizeType;
 
     SizeType size()     const { return SizeType(Size); }
     SizeType capacity() const { return SizeType(Size); }
@@ -71,9 +206,10 @@ template <unsigned MaxSize>
 class UAVCAN_EXPORT DynamicArrayBase
 {
 protected:
-    typedef IntegerSpec<IntegerBitLen<MaxSize>::Result, SignednessUnsigned, CastModeSaturate> RawSizeType;
+    typedef IntegerSpec<IntegerBitLen<MaxSize>::Result, SignednessUnsigned, CastModeSaturate> RawEncodedSizeType;
 public:
-    typedef typename StorageType<RawSizeType>::Type SizeType;
+    typedef typename StorageType<IntegerSpec<IntegerBitLen<EnumMax<MaxSize, 2>::Result>::Result,
+                                             SignednessUnsigned, CastModeSaturate> >::Type SizeType;
 
 private:
     SizeType size_;
@@ -117,7 +253,7 @@ protected:
     }
 
 public:
-    enum { SizeBitLen = RawSizeType::BitLen };
+    enum { SizeBitLen = RawEncodedSizeType::BitLen };
 
     SizeType size() const
     {
@@ -216,8 +352,8 @@ public:
     const ValueType* end()   const { return data_ + Base::size(); }
     ValueType& front()             { return at(0U); }
     const ValueType& front() const { return at(0U); }
-    ValueType& back()              { return at(SizeType(Base::size() - 1U)); }
-    const ValueType& back()  const { return at(SizeType(Base::size() - 1U)); }
+    ValueType& back()              { return at((Base::size() == 0U) ? 0U : SizeType(Base::size() - 1U)); }
+    const ValueType& back()  const { return at((Base::size() == 0U) ? 0U : SizeType(Base::size() - 1U)); }
 
     /**
      * Performs standard lexicographical compare of the elements.
@@ -316,7 +452,9 @@ class UAVCAN_EXPORT Array : public ArrayImpl<T, ArrayMode, MaxSize_>
         const bool self_tao_enabled = isOptimizedTailArray(tao_mode);
         if (!self_tao_enabled)
         {
-            const int res_sz = Base::RawSizeType::encode(size(), codec, TailArrayOptDisabled);
+            const int res_sz =
+                Base::RawEncodedSizeType::encode(typename StorageType<typename Base::RawEncodedSizeType>::Type(size()),
+                                                 codec, TailArrayOptDisabled);
             if (res_sz <= 0)
             {
                 return res_sz;
@@ -346,6 +484,10 @@ class UAVCAN_EXPORT Array : public ArrayImpl<T, ArrayMode, MaxSize_>
         return 1;
     }
 
+#if __GNUC__
+# pragma GCC diagnostic push
+# pragma GCC diagnostic ignored "-Wtype-limits"
+#endif
     int decodeImpl(ScalarCodec& codec, const TailArrayOptimizationMode tao_mode, TrueType)   /// Dynamic
     {
         StaticAssert<IsDynamic>::check();
@@ -373,13 +515,14 @@ class UAVCAN_EXPORT Array : public ArrayImpl<T, ArrayMode, MaxSize_>
         }
         else
         {
-            typename StorageType<typename Base::RawSizeType>::Type sz = 0;
-            const int res_sz = Base::RawSizeType::decode(sz, codec, TailArrayOptDisabled);
+            typename StorageType<typename Base::RawEncodedSizeType>::Type sz = 0;
+            const int res_sz = Base::RawEncodedSizeType::decode(sz, codec, TailArrayOptDisabled);
             if (res_sz <= 0)
             {
                 return res_sz;
             }
-            if ((sz > 0) && ((sz - 1u) > (MaxSize_ - 1u))) // -Werror=type-limits
+            // coverity[result_independent_of_operands]
+            if (static_cast<unsigned>(sz) > MaxSize_)   // False 'type-limits' warning occurs here
             {
                 return -ErrInvalidMarshalData;
             }
@@ -393,87 +536,82 @@ class UAVCAN_EXPORT Array : public ArrayImpl<T, ArrayMode, MaxSize_>
         UAVCAN_ASSERT(0); // Unreachable
         return -ErrLogic;
     }
+#if __GNUC__
+# pragma GCC diagnostic pop
+#endif
 
     template <typename InputIter>
     void packSquareMatrixImpl(const InputIter src_row_major)
     {
         StaticAssert<IsDynamic>::check();
-        const unsigned Width = CompileTimeIntSqrt<MaxSize>::Result;
 
-        bool all_nans = true;
-        bool scalar_matrix = true;
-        bool diagonal_matrix = true;
-        /*
-         * Detecting how the matrix can be compressed:
-         * - Matrix that consists only of NANs will be eliminated completely;
-         * - Scalar matrix will be reduced to one value;
-         * - Diagonal matrix will be reduced to array of length Width.
-         */
-        {
-            unsigned index = 0;
-            for (InputIter it = src_row_major; index < MaxSize; ++it, ++index)
-            {
-                const bool on_diagonal = (index / Width) == (index % Width);
-                const bool nan = isNaN(*it);
-                if (!nan)
-                {
-                    all_nans = false;
-                }
-                if (!on_diagonal && !isCloseToZero(*it))
-                {
-                    scalar_matrix = false;  // This matrix cannot be compressed.
-                    diagonal_matrix = false;
-                    break;
-                }
-                if (on_diagonal && !areClose(*it, *src_row_major))
-                {
-                    scalar_matrix = false;
-                }
-            }
-        }
-        /*
-         * Actual packing is performed here.
-         */
         this->clear();
-        if (!all_nans)
+
+        typedef SquareMatrixAnalyzer<InputIter, MaxSize> Analyzer;
+        const Analyzer analyzer(src_row_major);
+
+        switch (analyzer.detectOptimalPackingMode())
         {
-            unsigned index = 0;
-            for (InputIter it = src_row_major; index < MaxSize; ++it, ++index)
+        case Analyzer::PackingModeEmpty:
+        {
+            break; // Nothing to insert
+        }
+        case Analyzer::PackingModeScalar:
+        {
+            this->push_back(ValueType(*src_row_major));
+            break;
+        }
+        case Analyzer::PackingModeDiagonal:
+        {
+            for (int i = 0; i < Analyzer::NumRowsCols; i++)
             {
-                const bool on_diagonal = (index / Width) == (index % Width);
-                if (diagonal_matrix && !on_diagonal)
+                this->push_back(ValueType(*analyzer.accessElementAtRowCol(i, i)));
+            }
+            break;
+        }
+        case Analyzer::PackingModeSymmetric:
+        {
+            for (int row = 0; row < Analyzer::NumRowsCols; row++)
+            {
+                for (int col = row; col < Analyzer::NumRowsCols; col++)
                 {
-                    continue;
-                }
-                this->push_back(ValueType(*it));
-                if (scalar_matrix)
-                {
-                    break;
+                    this->push_back(ValueType(*analyzer.accessElementAtRowCol(row, col)));
                 }
             }
+            UAVCAN_ASSERT(this->size() == Analyzer::NumElementsInTriangle);
+            break;
+        }
+        case Analyzer::PackingModeFull:
+        {
+            InputIter it = src_row_major;
+            for (unsigned index = 0; index < MaxSize; index++, it++)
+            {
+                this->push_back(ValueType(*it));
+            }
+            break;
+        }
+        default:
+        {
+            UAVCAN_ASSERT(0);
+            break;
+        }
         }
     }
 
     template <typename ScalarType, typename OutputIter>
-    void unpackSquareMatrixImpl(OutputIter it) const
+    void unpackSquareMatrixImpl(const OutputIter dst_row_major) const
     {
         StaticAssert<IsDynamic>::check();
-        const unsigned Width = CompileTimeIntSqrt<MaxSize>::Result;
-        /*
-         * Unpacking as follows:
-         * - Array of length 1 will be unpacked to scalar matrix
-         * - Array of length Width will be unpacked to diagonal matrix
-         * - Array of length MaxSize will be unpacked to full matrix
-         * - All other length values will yield zero matrix
-         */
-        if (this->size() == Width || this->size() == 1)
+        typedef SquareMatrixTraits<MaxSize> Traits;
+
+        if (this->size() == Traits::NumRowsCols || this->size() == 1)   // Scalar or diagonal
         {
+            OutputIter it = dst_row_major;
             for (unsigned index = 0; index < MaxSize; index++)
             {
-                const bool on_diagonal = (index / Width) == (index % Width);
-                if (on_diagonal)
+                if (Traits::isIndexOnDiagonal(index))
                 {
-                    const SizeType source_index = SizeType((this->size() == 1) ? 0 : (index / Width));
+                    const SizeType source_index = SizeType((this->size() == 1) ? 0 : (index / Traits::NumRowsCols));
                     *it++ = ScalarType(this->at(source_index));
                 }
                 else
@@ -482,17 +620,41 @@ class UAVCAN_EXPORT Array : public ArrayImpl<T, ArrayMode, MaxSize_>
                 }
             }
         }
-        else if (this->size() == MaxSize)
+        else if (this->size() == Traits::NumElementsInTriangle)         // Symmetric
         {
+            OutputIter it = dst_row_major;
+            SizeType source_index = 0;
+            for (int row = 0; row < Traits::NumRowsCols; row++)
+            {
+                for (int col = 0; col < Traits::NumRowsCols; col++)
+                {
+                    if (col >= row)     // Diagonal or upper-right triangle
+                    {
+                        *it++ = ScalarType(this->at(source_index));
+                        source_index++;
+                    }
+                    else                // Lower-left triangle
+                    {
+                        // Transposing one element, argument swapping is intentional
+                        // coverity[swapped_arguments]
+                        *it++ = *(dst_row_major + Traits::computeElementIndexAtRowCol(col, row));
+                    }
+                }
+            }
+            UAVCAN_ASSERT(source_index == Traits::NumElementsInTriangle);
+        }
+        else if (this->size() == MaxSize)                               // Full - no packing whatsoever
+        {
+            OutputIter it = dst_row_major;
             for (SizeType index = 0; index < MaxSize; index++)
             {
                 *it++ = ScalarType(this->at(index));
             }
         }
-        else
+        else                                                            // Everything else
         {
             // coverity[suspicious_sizeof : FALSE]
-            ::uavcan::fill_n(it, MaxSize, ScalarType(0));
+            ::uavcan::fill_n(dst_row_major, MaxSize, ScalarType(0));
         }
     }
 
@@ -517,6 +679,20 @@ public:
         MaxBitLen = static_cast<unsigned>(Base::SizeBitLen) +
                     static_cast<unsigned>(RawValueType::MaxBitLen) * static_cast<unsigned>(MaxSize)
     };
+
+    /**
+     * Default constructor zero-initializes the storage even if it consists of primitive types.
+     */
+    Array() { }
+
+    /**
+     * String constructor - only for string-like arrays.
+     * Refer to @ref operator+=(const char*) for details.
+     */
+    Array(const char* str)      // Implicit
+    {
+        operator+=(str);
+    }
 
     static int encode(const SelfType& array, ScalarCodec& codec, const TailArrayOptimizationMode tao_mode)
     {
@@ -585,7 +761,8 @@ public:
      * Members must be comparable via operator ==.
      */
     template <typename R>
-    typename EnableIf<sizeof(((const R*)(0U))->size()) && sizeof((*((const R*)(0U)))[0]), bool>::Type
+    typename EnableIf<sizeof((reinterpret_cast<const R*>(0))->size()) &&
+                      sizeof((*(reinterpret_cast<const R*>(0)))[0]), bool>::Type
     operator==(const R& rhs) const
     {
         if (size() != rhs.size())
@@ -610,7 +787,8 @@ public:
      * Any container with size() and [] is acceptable.
      */
     template <typename R>
-    typename EnableIf<sizeof(((const R*)(0U))->size()) && sizeof((*((const R*)(0U)))[0]), bool>::Type
+    typename EnableIf<sizeof((reinterpret_cast<const R*>(0))->size()) &&
+                      sizeof((*(reinterpret_cast<const R*>(0)))[0]), bool>::Type
     isClose(const R& rhs) const
     {
         if (size() != rhs.size())
@@ -633,7 +811,7 @@ public:
      */
     bool operator==(const char* ch) const
     {
-        if (ch == NULL)
+        if (ch == UAVCAN_NULLPTR)
         {
             return false;
         }
@@ -654,7 +832,7 @@ public:
         StaticAssert<Base::IsStringLike>::check();
         StaticAssert<IsDynamic>::check();
         Base::clear();
-        if (ch == NULL)
+        if (ch == UAVCAN_NULLPTR)
         {
             handleFatalError("Array::operator=(const char*)");
         }
@@ -673,7 +851,7 @@ public:
     {
         StaticAssert<Base::IsStringLike>::check();
         StaticAssert<IsDynamic>::check();
-        if (ch == NULL)
+        if (ch == UAVCAN_NULLPTR)
         {
             handleFatalError("Array::operator+=(const char*)");
         }
@@ -713,7 +891,8 @@ public:
         StaticAssert<IsDynamic>::check();
 
         StaticAssert<sizeof(A() >= A(0))>::check();              // This check allows to weed out most compound types
-        StaticAssert<sizeof(A) <= sizeof(long double)>::check(); // Another stupid check to catch non-primitive types
+        StaticAssert<(sizeof(A) <= sizeof(long double)) ||
+                     (sizeof(A) <= sizeof(long long))>::check(); // Another stupid check to catch non-primitive types
 
         if (!format)
         {
@@ -727,7 +906,6 @@ public:
         const SizeType max_size = SizeType(capacity() - size());
 
         // We have one extra byte for the null terminator, hence +1
-        using namespace std; // For snprintf()
         const int ret = snprintf(reinterpret_cast<char*>(ptr), SizeType(max_size + 1U), format, value);
 
         for (int i = 0; i < min(ret, int(max_size)); i++)
@@ -738,6 +916,38 @@ public:
         {
             UAVCAN_ASSERT(0);    // Likely an invalid format string
             (*this) += format;   // So we print it as is in release builds
+        }
+    }
+
+    /**
+     * Converts the string to upper/lower case in place, assuming that encoding is ASCII.
+     * These methods can only be used with string-like arrays; otherwise compilation will fail.
+     */
+    void convertToUpperCaseASCII()
+    {
+        StaticAssert<Base::IsStringLike>::check();
+
+        for (SizeType i = 0; i < size(); i++)
+        {
+            const int x = Base::at(i);
+            if ((x <= 'z') && (x >= 'a'))
+            {
+                Base::at(i) = static_cast<ValueType>(x + ('Z' - 'z'));
+            }
+        }
+    }
+
+    void convertToLowerCaseASCII()
+    {
+        StaticAssert<Base::IsStringLike>::check();
+
+        for (SizeType i = 0; i < size(); i++)
+        {
+            const int x = Base::at(i);
+            if ((x <= 'Z') && (x >= 'A'))
+            {
+                Base::at(i) = static_cast<ValueType>(x - ('Z' - 'z'));
+            }
         }
     }
 
@@ -793,7 +1003,8 @@ public:
      * Note that matrix packing code uses @ref areClose() for comparison.
      */
     template <typename R>
-    typename EnableIf<sizeof(((const R*)(0U))->begin()) && sizeof(((const R*)(0U))->size())>::Type
+    typename EnableIf<sizeof((reinterpret_cast<const R*>(0))->begin()) &&
+                      sizeof((reinterpret_cast<const R*>(0))->size())>::Type
     packSquareMatrix(const R& src_row_major)
     {
         if (src_row_major.size() == MaxSize)
@@ -849,7 +1060,8 @@ public:
      * Please refer to the specification to learn more about matrix packing.
      */
     template <typename R>
-    typename EnableIf<sizeof(((const R*)(0U))->begin()) && sizeof(((const R*)(0U))->size())>::Type
+    typename EnableIf<sizeof((reinterpret_cast<const R*>(0))->begin()) &&
+                      sizeof((reinterpret_cast<const R*>(0))->size())>::Type
     unpackSquareMatrix(R& dst_row_major) const
     {
         if (dst_row_major.size() == MaxSize)
@@ -878,19 +1090,39 @@ public:
     typedef SizeType size_type;
 };
 
+/**
+ * These operators will only be enabled if rhs and lhs are different types. This precondition allows to work-around
+ * the ambiguity arising from the scope containing two definitions: one here and the others in Array<>.
+ * Refer to https://github.com/UAVCAN/libuavcan/issues/55 for more info.
+ */
 template <typename R, typename T, ArrayMode ArrayMode, unsigned MaxSize>
 UAVCAN_EXPORT
-inline bool operator==(const R& rhs, const Array<T, ArrayMode, MaxSize>& lhs)
+inline typename EnableIf<!IsSameType<R, Array<T, ArrayMode, MaxSize> >::Result, bool>::Type
+operator==(const R& rhs, const Array<T, ArrayMode, MaxSize>& lhs)
 {
     return lhs.operator==(rhs);
 }
 
 template <typename R, typename T, ArrayMode ArrayMode, unsigned MaxSize>
 UAVCAN_EXPORT
-inline bool operator!=(const R& rhs, const Array<T, ArrayMode, MaxSize>& lhs)
+inline typename EnableIf<!IsSameType<R, Array<T, ArrayMode, MaxSize> >::Result, bool>::Type
+operator!=(const R& rhs, const Array<T, ArrayMode, MaxSize>& lhs)
 {
     return lhs.operator!=(rhs);
 }
+
+/**
+ * Shortcut for string-like array type instantiation.
+ * The proper way of doing this is actually "template<> using ... = ...", but this feature is not available in
+ * older C++ revisions which the library has to support.
+ */
+template <unsigned MaxSize>
+class MakeString
+{
+    MakeString();       // This class is not instantiatable.
+public:
+    typedef Array<IntegerSpec<8, SignednessUnsigned, CastModeSaturate>, ArrayModeDynamic, MaxSize> Type;
+};
 
 /**
  * YAML streamer specification for any Array<>
@@ -1034,3 +1266,5 @@ public:
 };
 
 }
+
+#endif // UAVCAN_MARSHAL_ARRAY_HPP_INCLUDED

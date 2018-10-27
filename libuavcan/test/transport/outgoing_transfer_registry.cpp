@@ -6,23 +6,24 @@
 #include <gtest/gtest.h>
 #include <uavcan/transport/outgoing_transfer_registry.hpp>
 #include "../clock.hpp"
+#include "transfer_test_helpers.hpp"
 
 
 TEST(OutgoingTransferRegistry, Basic)
 {
     using uavcan::OutgoingTransferRegistryKey;
-    uavcan::PoolManager<1> poolmgr;  // Empty
-    uavcan::OutgoingTransferRegistry<4> otr(poolmgr);
+    uavcan::PoolAllocator<uavcan::MemPoolBlockSize * 2, uavcan::MemPoolBlockSize> poolmgr;
+    uavcan::OutgoingTransferRegistry otr(poolmgr);
 
     otr.cleanup(tsMono(1000));
 
     static const int NUM_KEYS = 5;
     const OutgoingTransferRegistryKey keys[NUM_KEYS] =
     {
-        OutgoingTransferRegistryKey(123, uavcan::TransferTypeMessageUnicast,   42),
+        OutgoingTransferRegistryKey(123, uavcan::TransferTypeServiceRequest,   42),
         OutgoingTransferRegistryKey(321, uavcan::TransferTypeMessageBroadcast, 0),
         OutgoingTransferRegistryKey(213, uavcan::TransferTypeServiceRequest,   2),
-        OutgoingTransferRegistryKey(312, uavcan::TransferTypeMessageUnicast,   4),
+        OutgoingTransferRegistryKey(312, uavcan::TransferTypeServiceRequest,   4),
         OutgoingTransferRegistryKey(456, uavcan::TransferTypeServiceRequest,   2)
     };
 

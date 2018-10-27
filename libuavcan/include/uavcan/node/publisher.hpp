@@ -2,7 +2,8 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_NODE_PUBLISHER_HPP_INCLUDED
+#define UAVCAN_NODE_PUBLISHER_HPP_INCLUDED
 
 #include <uavcan/node/generic_publisher.hpp>
 
@@ -64,21 +65,7 @@ public:
         return BaseType::publish(message, TransferTypeMessageBroadcast, NodeID::Broadcast, tid);
     }
 
-    /**
-     * Unicast the message to the specified destination Node ID.
-     * Returns negative error code.
-     */
-    int unicast(const DataType& message, NodeID dst_node_id)
-    {
-        if (!dst_node_id.isUnicast())
-        {
-            UAVCAN_ASSERT(0);
-            return -ErrInvalidParam;
-        }
-        return BaseType::publish(message, TransferTypeMessageUnicast, dst_node_id);
-    }
-
-    static MonotonicDuration getDefaultTxTimeout() { return MonotonicDuration::fromMSec(10); }
+    static MonotonicDuration getDefaultTxTimeout() { return MonotonicDuration::fromMSec(100); }
 
     /**
      * Init method can be called prior first publication, but it's not necessary
@@ -86,12 +73,17 @@ public:
      */
     using BaseType::init;
 
+    using BaseType::allowAnonymousTransfers;
     using BaseType::getTransferSender;
     using BaseType::getMinTxTimeout;
     using BaseType::getMaxTxTimeout;
     using BaseType::getTxTimeout;
     using BaseType::setTxTimeout;
+    using BaseType::getPriority;
+    using BaseType::setPriority;
     using BaseType::getNode;
 };
 
 }
+
+#endif // UAVCAN_NODE_PUBLISHER_HPP_INCLUDED

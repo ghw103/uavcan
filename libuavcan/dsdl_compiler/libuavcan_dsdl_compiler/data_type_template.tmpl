@@ -6,7 +6,8 @@
  * Source file: ${t.source_file}
  */
 
-#pragma once
+#ifndef ${t.include_guard}
+#define ${t.include_guard}
 
 #include <uavcan/build_config.hpp>
 #include <uavcan/node/global_data_type_registry.hpp>
@@ -32,25 +33,17 @@ ${line}
 #undef ${a.name}
 % endfor
 
-#ifndef UAVCAN_PACK_STRUCTS
-# error UAVCAN_PACK_STRUCTS
-#endif
-
 % for nsc in t.cpp_namespace_components:
 namespace ${nsc}
 {
 % endfor
-
-#if UAVCAN_PACK_STRUCTS
-UAVCAN_PACKED_BEGIN
-#endif
 
 % if t.kind != t.KIND_SERVICE:
 template <int _tmpl>
 % endif
 struct UAVCAN_EXPORT ${t.cpp_type_name}
 {
-<!--(macro generate_primary_body)--> #! type_name, max_bitlen, fields, constants
+<!--(macro generate_primary_body)--> #! type_name, max_bitlen, fields, constants, union
     typedef const ${type_name}<_tmpl>& ParameterType;
     typedef ${type_name}<_tmpl>& ReferenceType;
 
@@ -65,17 +58,54 @@ struct UAVCAN_EXPORT ${t.cpp_type_name}
     ${expand_attr_types(group_name='ConstantTypes', attrs=constants)}
     ${expand_attr_types(group_name='FieldTypes', attrs=fields)}
 
-    <!--(macro expand_enum_per_field)--> #! enum_name
+    % if union:
+    
+    struct Tag
+    {
+        enum Type
+        {
+        % for idx,last,a in enum_last_value(fields):
+            ${a.name}${',' if not last else ''}
+        % endfor
+        };
+    };
+
+    typedef ::uavcan::IntegerSpec< ::uavcan::IntegerBitLen< ${len(fields)} >::Result,
+                                   ::uavcan::SignednessUnsigned, ::uavcan::CastModeTruncate > TagType;
+
+        <!--(macro expand_enum_per_field)--> #! enum_name, enum_comparator
+    enum
+    {
+        ${enum_name} = TagType::BitLen +
+            % for idx,last,a in enum_last_value(fields):
+                % if not last:
+            ::uavcan::${enum_comparator}<FieldTypes::${a.name}::${enum_name},
+                % else:
+                FieldTypes::${a.name}::${enum_name} ${'>::Result' * (len(fields) - 1)}
+                % endif
+            % endfor
+    };
+        <!--(end)-->
+
+    ${expand_enum_per_field(enum_name='MinBitLen', enum_comparator='EnumMin')}
+    ${expand_enum_per_field(enum_name='MaxBitLen', enum_comparator='EnumMax')}
+
+    % else:
+
+        <!--(macro expand_enum_per_field)--> #! enum_name
     enum
     {
         ${enum_name}
-        % for idx,a in enumerate(fields):
+            % for idx,a in enumerate(fields):
             ${'=' if idx == 0 else '+'} FieldTypes::${a.name}::${enum_name}
-        % endfor
+            % endfor
     };
-    <!--(end)-->
+        <!--(end)-->
+
     ${expand_enum_per_field(enum_name='MinBitLen')}
     ${expand_enum_per_field(enum_name='MaxBitLen')}
+
+    % endif
 
     // Constants
     % for a in constants:
@@ -83,18 +113,28 @@ struct UAVCAN_EXPORT ${t.cpp_type_name}
     % endfor
 
     // Fields
-    % for a in fields:
+    % for a in [x for x in fields if not x.void]:
     typename ::uavcan::StorageType< typename FieldTypes::${a.name} >::Type ${a.name};
     % endfor
 
+    % if union:
+private:
+    typename ::uavcan::StorageType< TagType >::Type _tag_;  // The name is mangled to avoid clashing with fields
+
+    template <typename Tag::Type T>
+    struct TagToType;
+
+public:
+    % endif
+
     ${type_name}()
-    % for idx,a in enumerate(fields):
+    % for idx,a in enumerate([x for x in fields if not x.void]):
         ${':' if idx == 0 else ','} ${a.name}()
     % endfor
+    % if union:
+        , _tag_()
+    % endif
     {
-        enum { MaxByteLen = ::uavcan::BitLenToByteLen<MaxBitLen>::Result };
-        ::uavcan::StaticAssert<int(MaxByteLen) <= int(::uavcan::MaxTransferPayloadLen)>::check();
-
         ::uavcan::StaticAssert<_tmpl == 0>::check();  // Usage check
 
 #if UAVCAN_DEBUG
@@ -121,6 +161,35 @@ struct UAVCAN_EXPORT ${t.cpp_type_name}
 
     static int decode(ReferenceType self, ::uavcan::ScalarCodec& codec,
                       ::uavcan::TailArrayOptimizationMode tao_mode = ::uavcan::TailArrayOptEnabled);
+
+    % if union:
+    /**
+     * Explicit access to the tag.
+     * It is safer to use is()/as()/to() instead.
+     */
+    typename Tag::Type getTag() const { return typename Tag::Type(_tag_); }
+    void setTag(typename Tag::Type x) { _tag_ = typename ::uavcan::StorageType< TagType >::Type(x); }
+
+    /**
+     * Whether the union is set to the given type.
+     * Access by tag; this will work even if there are non-unique types within the union.
+     */
+    bool is(typename Tag::Type x) const { return typename Tag::Type(_tag_) == x; }
+
+    /**
+     * If the union is currently set to the type T, returns pointer to the appropriate field.
+     * If the union is set to another type, returns null pointer.
+     */
+    template <typename Tag::Type T>
+    inline const typename TagToType<T>::StorageType* as() const;
+
+    /**
+     * Switches the union to the given type and returns a mutable reference to the appropriate field.
+     * If the previous type was different, a default constructor will be called first.
+     */
+    template <typename Tag::Type T>
+    inline typename TagToType<T>::StorageType& to();
+    % endif
 <!--(end)-->
 
 % if t.kind == t.KIND_SERVICE:
@@ -128,21 +197,23 @@ struct UAVCAN_EXPORT ${t.cpp_type_name}
     struct Request_
     {
         ${indent(generate_primary_body(type_name='Request_', max_bitlen=t.get_max_bitlen_request(), \
-                                       fields=t.request_fields, constants=t.request_constants))}
+                                       fields=t.request_fields, constants=t.request_constants, \
+                                       union=t.request_union))}
     };
 
     template <int _tmpl>
     struct Response_
     {
         ${indent(generate_primary_body(type_name='Response_', max_bitlen=t.get_max_bitlen_response(), \
-                                       fields=t.response_fields, constants=t.response_constants))}
+                                       fields=t.response_fields, constants=t.response_constants, \
+                                       union=t.response_union))}
     };
 
     typedef Request_<0> Request;
     typedef Response_<0> Response;
 % else:
     ${generate_primary_body(type_name=t.cpp_type_name, max_bitlen=t.get_max_bitlen(), \
-                            fields=t.fields, constants=t.constants)}
+                            fields=t.fields, constants=t.constants, union=t.union)}
 % endif
 
     /*
@@ -173,40 +244,66 @@ private:
 % endif
 };
 
-#if UAVCAN_PACK_STRUCTS
-UAVCAN_PACKED_END
-#endif
-
 /*
  * Out of line struct method definitions
  */
-<!--(macro define_out_of_line_struct_methods)--> #! scope_prefix, fields
+<!--(macro define_out_of_line_struct_methods)--> #! scope_prefix, fields, union
 
 template <int _tmpl>
 bool ${scope_prefix}<_tmpl>::operator==(ParameterType rhs) const
 {
-    % if fields:
-    return
+    % if union:
+    if (_tag_ != rhs._tag_)
+    {
+        return false;
+    }
         % for idx,a in enumerate(fields):
-        ${a.name} == rhs.${a.name}${' &&' if (idx + 1) < len(fields) else ';'}
+    if (_tag_ == ${idx})
+    {
+        return ${a.name} == rhs.${a.name};
+    }
         % endfor
+    UAVCAN_ASSERT(0);   // Invalid tag
+    return false;
     % else:
+        % if fields:
+    return
+            % for idx,last,a in enum_last_value([x for x in fields if not x.void]):
+        ${a.name} == rhs.${a.name}${' &&' if not last else ';'}
+            % endfor
+        % else:
     (void)rhs;
     return true;
+        % endif
     % endif
 }
 
 template <int _tmpl>
 bool ${scope_prefix}<_tmpl>::isClose(ParameterType rhs) const
 {
-    % if fields:
-    return
+    % if union:
+    if (_tag_ != rhs._tag_)
+    {
+        return false;
+    }
         % for idx,a in enumerate(fields):
-        ::uavcan::areClose(${a.name}, rhs.${a.name})${' &&' if (idx + 1) < len(fields) else ';'}
+    if (_tag_ == ${idx})
+    {
+        return ::uavcan::areClose(${a.name}, rhs.${a.name});
+    }
         % endfor
+    UAVCAN_ASSERT(0);   // Invalid tag
+    return false;
     % else:
+        % if fields:
+    return
+            % for idx,last,a in enum_last_value([x for x in fields if not x.void]):
+        ::uavcan::areClose(${a.name}, rhs.${a.name})${' &&' if not last else ';'}
+            % endfor
+        % else:
     (void)rhs;
     return true;
+        % endif
     % endif
 }
 
@@ -218,29 +315,83 @@ int ${scope_prefix}<_tmpl>::${call_name}(${self_parameter_type} self, ::uavcan::
     (void)self;
     (void)codec;
     (void)tao_mode;
-    int res = 1;
-        % for idx,a in enumerate(fields):
-    res = FieldTypes::${a.name}::${call_name}(self.${a.name}, codec, \
-${'::uavcan::TailArrayOptDisabled' if (idx + 1) < len(fields) else 'tao_mode'});
-            % if (idx + 1) < len(fields):
+        % if union:
+    const int res = TagType::${call_name}(self._tag_, codec, ::uavcan::TailArrayOptDisabled);
     if (res <= 0)
     {
         return res;
     }
-            % endif
-        % endfor
+            % for idx,a in enumerate(fields):
+    if (self._tag_ == ${idx})
+    {
+        return FieldTypes::${a.name}::${call_name}(self.${a.name}, codec, tao_mode);
+    }
+            % endfor
+    return -1;          // Invalid tag value
+        % else:
+            % for a in [x for x in fields if x.void]:
+    typename ::uavcan::StorageType< typename FieldTypes::${a.name} >::Type ${a.name} = 0;
+            % endfor
+    int res = 1;
+            % for idx,last,a in enum_last_value(fields):
+    res = FieldTypes::${a.name}::${call_name}(${'self.' * (not a.void)}${a.name}, codec, \
+${'::uavcan::TailArrayOptDisabled' if not last else 'tao_mode'});
+                % if not last:
+    if (res <= 0)
+    {
+        return res;
+    }
+                % endif
+            % endfor
     return res;
+        % endif
 }
     <!--(end)-->
 ${generate_codec_calls_per_field(call_name='encode', self_parameter_type='ParameterType')}
 ${generate_codec_calls_per_field(call_name='decode', self_parameter_type='ReferenceType')}
+
+    % if union:
+        % for idx,a in enumerate(fields):
+template <>
+template <>
+struct ${scope_prefix}<0>::TagToType<${scope_prefix}<0>::Tag::${a.name}>
+{
+    typedef typename ${scope_prefix}<0>::FieldTypes::${a.name} Type;
+    typedef typename ::uavcan::StorageType<Type>::Type StorageType;
+};
+
+template <>
+template <>
+inline const typename ${scope_prefix}<0>::TagToType< ${scope_prefix}<0>::Tag::${a.name} >::StorageType*
+${scope_prefix}<0>::as< ${scope_prefix}<0>::Tag::${a.name} >() const
+{
+    return is(${scope_prefix}<0>::Tag::${a.name}) ? &${a.name} : UAVCAN_NULLPTR;
+}
+
+template <>
+template <>
+inline typename ${scope_prefix}<0>::TagToType< ${scope_prefix}<0>::Tag::${a.name} >::StorageType&
+${scope_prefix}<0>::to< ${scope_prefix}<0>::Tag::${a.name} >()
+{
+    if (_tag_ != ${idx})
+    {
+        _tag_ = ${idx};
+        ${a.name} = typename TagToType< ${scope_prefix}<0>::Tag::${a.name} >::StorageType();
+    }
+    return ${a.name};
+}
+
+        % endfor
+    % endif
 <!--(end)-->
 
 % if t.kind == t.KIND_SERVICE:
-${define_out_of_line_struct_methods(scope_prefix=t.cpp_type_name + '::Request_', fields=t.request_fields)}
-${define_out_of_line_struct_methods(scope_prefix=t.cpp_type_name + '::Response_', fields=t.response_fields)}
+${define_out_of_line_struct_methods(scope_prefix=t.cpp_type_name + '::Request_', fields=t.request_fields, \
+                                    union=t.request_union)}
+${define_out_of_line_struct_methods(scope_prefix=t.cpp_type_name + '::Response_', fields=t.response_fields, \
+                                    union=t.response_union)}
 % else:
-${define_out_of_line_struct_methods(scope_prefix=t.cpp_type_name, fields=t.fields)}
+${define_out_of_line_struct_methods(scope_prefix=t.cpp_type_name, fields=t.fields, union=t.union)}
 % endif
 
 /*
@@ -306,7 +457,7 @@ const ::uavcan::DefaultDataTypeRegistrator< ${t.cpp_full_type_name} > _uavcan_gd
 // No default registration
 % endif
 
-% for nsc in t.cpp_namespace_components:
+% for nsc in t.cpp_namespace_components[::-1]:
 } // Namespace ${nsc}
 % endfor
 
@@ -316,7 +467,7 @@ const ::uavcan::DefaultDataTypeRegistrator< ${t.cpp_full_type_name} > _uavcan_gd
 namespace uavcan
 {
 
-<!--(macro define_yaml_streamer)--> #! type_name, fields
+<!--(macro define_yaml_streamer)--> #! type_name, fields, union
 template <>
 class UAVCAN_EXPORT YamlStreamer< ${type_name} >
 {
@@ -331,8 +482,7 @@ void YamlStreamer< ${type_name} >::stream(Stream& s, ${type_name}::ParameterType
     (void)s;
     (void)obj;
     (void)level;
-    % for idx,a in enumerate(fields):
-        % if idx == 0:
+    % if union:
     if (level > 0)
     {
         s << '\n';
@@ -341,23 +491,42 @@ void YamlStreamer< ${type_name} >::stream(Stream& s, ${type_name}::ParameterType
             s << "  ";
         }
     }
-        % else:
+        % for idx,a in enumerate(fields):
+    if (static_cast<int>(obj.getTag()) == ${idx})
+    {
+        s << "${a.name}: ";
+        YamlStreamer< ${type_name}::FieldTypes::${a.name} >::stream(s, obj.${a.name}, level + 1);
+    }
+        % endfor
+    % else:
+        % for idx,a in enumerate([x for x in fields if not x.void]):
+            % if idx == 0:
+    if (level > 0)
+    {
+        s << '\n';
+        for (int pos = 0; pos < level; pos++)
+        {
+            s << "  ";
+        }
+    }
+            % else:
     s << '\n';
     for (int pos = 0; pos < level; pos++)
     {
         s << "  ";
     }
-        % endif
+            % endif
     s << "${a.name}: ";
     YamlStreamer< ${type_name}::FieldTypes::${a.name} >::stream(s, obj.${a.name}, level + 1);
-    % endfor
+        % endfor
+    % endif
 }
 <!--(end)-->
 % if t.kind == t.KIND_SERVICE:
-${define_yaml_streamer(type_name=t.cpp_full_type_name + '::Request', fields=t.request_fields)}
-${define_yaml_streamer(type_name=t.cpp_full_type_name + '::Response', fields=t.response_fields)}
+${define_yaml_streamer(type_name=t.cpp_full_type_name + '::Request', fields=t.request_fields, union=t.request_union)}
+${define_yaml_streamer(type_name=t.cpp_full_type_name + '::Response', fields=t.response_fields, union=t.response_union)}
 % else:
-${define_yaml_streamer(type_name=t.cpp_full_type_name, fields=t.fields)}
+${define_yaml_streamer(type_name=t.cpp_full_type_name, fields=t.fields, union=t.union)}
 % endif
 
 }
@@ -382,6 +551,8 @@ ${define_streaming_operator(type_name=t.cpp_full_type_name + '::Response')}
 ${define_streaming_operator(type_name=t.cpp_full_type_name)}
 % endif
 
-% for nsc in t.cpp_namespace_components:
-}
+% for nsc in t.cpp_namespace_components[::-1]:
+} // Namespace ${nsc}
 % endfor
+
+#endif // ${t.include_guard}

@@ -2,7 +2,8 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_UTIL_TEMPLATES_HPP_INCLUDED
+#define UAVCAN_UTIL_TEMPLATES_HPP_INCLUDED
 
 #include <climits>
 #include <cstddef>
@@ -91,12 +92,36 @@ struct UAVCAN_EXPORT Select<false, TrueType, FalseType>
 };
 
 /**
+ * Checks if two identifiers refer to the same type.
+ */
+template<class T, class U>
+struct IsSameType
+{
+    enum { Result = 0 };
+};
+
+template <typename T>
+struct IsSameType<T, T>
+{
+    enum { Result = 1 };
+};
+
+/**
  * Remove reference as in <type_traits>
  */
 template <typename T> struct RemoveReference      { typedef T Type; };
 template <typename T> struct RemoveReference<T&>  { typedef T Type; };
 #if UAVCAN_CPP_VERSION > UAVCAN_CPP03
 template <typename T> struct RemoveReference<T&&> { typedef T Type; };
+#endif
+
+/**
+ * Parameter types
+ */
+template <typename U> struct ParameterType { typedef const U& Type; };
+template <typename U> struct ParameterType<U&> { typedef U& Type; };
+#if UAVCAN_CPP_VERSION > UAVCAN_CPP03
+template <typename U> struct ParameterType<U&&> { typedef U&& Type; };
 #endif
 
 /**
@@ -127,12 +152,12 @@ public:
 };
 
 /**
- * try_implicit_cast<>(From)
- * try_implicit_cast<>(From, To)
+ * coerceOrFallback<To>(From)
+ * coerceOrFallback<To>(From, To)
  * @{
  */
 template <typename From, typename To>
-struct UAVCAN_EXPORT TryImplicitCastImpl
+struct UAVCAN_EXPORT CoerceOrFallbackImpl
 {
     static To impl(const From& from, const To&, TrueType) { return To(from); }
     static To impl(const From&, const To& default_, FalseType) { return default_; }
@@ -144,10 +169,10 @@ struct UAVCAN_EXPORT TryImplicitCastImpl
  */
 template <typename To, typename From>
 UAVCAN_EXPORT
-To try_implicit_cast(const From& from, const To& default_)
+To coerceOrFallback(const From& from, const To& default_)
 {
-    return TryImplicitCastImpl<From, To>::impl(from, default_,
-                                               BooleanType<IsImplicitlyConvertibleFromTo<From, To>::Result>());
+    return CoerceOrFallbackImpl<From, To>::impl(from, default_,
+                                                BooleanType<IsImplicitlyConvertibleFromTo<From, To>::Result>());
 }
 
 /**
@@ -156,28 +181,47 @@ To try_implicit_cast(const From& from, const To& default_)
  */
 template <typename To, typename From>
 UAVCAN_EXPORT
-To try_implicit_cast(const From& from)
+To coerceOrFallback(const From& from)
 {
-    return TryImplicitCastImpl<From, To>::impl(from, To(),
-                                               BooleanType<IsImplicitlyConvertibleFromTo<From, To>::Result>());
+    return CoerceOrFallbackImpl<From, To>::impl(from, To(),
+                                                BooleanType<IsImplicitlyConvertibleFromTo<From, To>::Result>());
 }
 /**
  * @}
  */
 
 /**
+ * Selects smaller value
+ */
+template <long A, long B>
+struct EnumMin
+{
+    enum { Result = (A < B) ? A : B };
+};
+
+/**
+ * Selects larger value
+ */
+template <long A, long B>
+struct EnumMax
+{
+    enum { Result = (A > B) ? A : B };
+};
+
+/**
  * Compile time square root for integers.
  * Useful for operations on square matrices.
  */
 template <unsigned Value> struct UAVCAN_EXPORT CompileTimeIntSqrt;
-template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<4>  { enum { Result = 2 }; };
-template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<9>  { enum { Result = 3 }; };
-template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<16> { enum { Result = 4 }; };
-template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<25> { enum { Result = 5 }; };
-template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<36> { enum { Result = 6 }; };
-template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<49> { enum { Result = 7 }; };
-template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<64> { enum { Result = 8 }; };
-template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<81> { enum { Result = 9 }; };
+template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<1>   { enum { Result = 1  }; };
+template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<4>   { enum { Result = 2  }; };
+template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<9>   { enum { Result = 3  }; };
+template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<16>  { enum { Result = 4  }; };
+template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<25>  { enum { Result = 5  }; };
+template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<36>  { enum { Result = 6  }; };
+template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<49>  { enum { Result = 7  }; };
+template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<64>  { enum { Result = 8  }; };
+template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<81>  { enum { Result = 9  }; };
 template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<100> { enum { Result = 10 }; };
 template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<121> { enum { Result = 11 }; };
 template <> struct UAVCAN_EXPORT CompileTimeIntSqrt<144> { enum { Result = 12 }; };
@@ -296,6 +340,16 @@ bool equal(InputIt1 first1, InputIt1 last1, InputIt2 first2)
  */
 template <typename T>
 struct UAVCAN_EXPORT NumericTraits;
+
+/// bool
+template <>
+struct UAVCAN_EXPORT NumericTraits<bool>
+{
+    enum { IsSigned = 0 };
+    enum { IsInteger = 1 };
+    static bool max() { return true; }
+    static bool min() { return false; }
+};
 
 /// char
 template <>
@@ -470,6 +524,20 @@ inline bool isInfinity(T arg)
 }
 
 /**
+ * Replacement for std::isfinite().
+ * Note that direct float comparison (==, !=) is intentionally avoided.
+ */
+template <typename T>
+inline bool isFinite(T arg)
+{
+#if UAVCAN_CPP_VERSION >= UAVCAN_CPP11
+    return std::isfinite(arg);
+#else
+    return !isNaN(arg) && !isInfinity(arg);
+#endif
+}
+
+/**
  * Replacement for std::signbit().
  * Note that direct float comparison (==, !=) is intentionally avoided.
  */
@@ -485,3 +553,5 @@ inline bool getSignBit(T arg)
 }
 
 }
+
+#endif // UAVCAN_UTIL_TEMPLATES_HPP_INCLUDED

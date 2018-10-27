@@ -28,22 +28,12 @@ static uavcan_linux::NodePtr initNode(const std::vector<std::string>& ifaces, ua
     std::cout << "Start returned: " << start_res << std::endl;
     ENFORCE(0 == start_res);
 
-    /*
-     * Checking if our node conflicts with other nodes. This may take a few seconds.
-     */
-    uavcan::NetworkCompatibilityCheckResult init_result;
-    ENFORCE(0 == node->checkNetworkCompatibility(init_result));
-    if (!init_result.isOk())
-    {
-        throw std::runtime_error("Network conflict with node " + std::to_string(init_result.conflicting_node.get()));
-    }
-
     std::cout << "Node started successfully" << std::endl;
 
     /*
      * Say Hi to the world.
      */
-    node->setStatusOk();
+    node->setModeOperational();
     node->logInfo("init", "Hello world! I'm [%*], NID %*",
                   node->getNodeStatusProvider().getName().c_str(), int(node->getNodeID().get()));
     return node;
@@ -67,11 +57,11 @@ static void runForever(const uavcan_linux::NodePtr& node)
     {
         explicit NodeStatusMonitor(uavcan::INode& node) : uavcan::NodeStatusMonitor(node) { }
 
-        virtual void handleNodeStatusChange(const NodeStatusChangeEvent& event)
+        void handleNodeStatusChange(const NodeStatusChangeEvent& event) override
         {
             std::cout << "Remote node NID " << int(event.node_id.get()) << " changed status: "
-                      << int(event.old_status.status_code) << " --> "
-                      << int(event.status.status_code) << std::endl;
+                      << event.old_status.toString() << " --> "
+                      << event.status.toString() << std::endl;
         }
     };
 
@@ -84,6 +74,8 @@ static void runForever(const uavcan_linux::NodePtr& node)
     auto do_nothing_once_a_minute = [&node](const uavcan::TimerEvent&)
     {
         node->logInfo("timer", "Another minute passed...");
+        // coverity[dont_call]
+        node->setVendorSpecificStatusCode(static_cast<std::uint16_t>(std::rand())); // Setting to an arbitrary value
     };
     auto timer = node->makeTimer(uavcan::MonotonicDuration::fromMSec(60000), do_nothing_once_a_minute);
 

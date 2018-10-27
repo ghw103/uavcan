@@ -8,7 +8,6 @@
 #include "can/can.hpp"
 #include <uavcan/transport/transfer_sender.hpp>
 
-
 static int sendOne(uavcan::TransferSender& sender, const std::string& data,
                    uint64_t monotonic_tx_deadline, uint64_t monotonic_blocking_deadline,
                    uavcan::TransferType transfer_type, uavcan::NodeID dst_node_id)
@@ -30,17 +29,15 @@ static int sendOne(uavcan::TransferSender& sender, const std::string& data,
 
 TEST(TransferSender, Basic)
 {
-    uavcan::PoolManager<1> poolmgr;
+    uavcan::PoolAllocator<uavcan::MemPoolBlockSize * 100, uavcan::MemPoolBlockSize> poolmgr;
 
     SystemClockMock clockmock(100);
     CanDriverMock driver(2, clockmock);
 
-    uavcan::OutgoingTransferRegistry<8> out_trans_reg(poolmgr);
-
     static const uavcan::NodeID TX_NODE_ID(64);
     static const uavcan::NodeID RX_NODE_ID(65);
-    uavcan::Dispatcher dispatcher_tx(driver, poolmgr, clockmock, out_trans_reg);
-    uavcan::Dispatcher dispatcher_rx(driver, poolmgr, clockmock, out_trans_reg);
+    uavcan::Dispatcher dispatcher_tx(driver, poolmgr, clockmock);
+    uavcan::Dispatcher dispatcher_rx(driver, poolmgr, clockmock);
     ASSERT_TRUE(dispatcher_tx.setNodeID(TX_NODE_ID));
     ASSERT_TRUE(dispatcher_rx.setNodeID(RX_NODE_ID));
 
@@ -75,28 +72,39 @@ TEST(TransferSender, Basic)
      */
     static const uint64_t TX_DEADLINE = 1000000;
 
+    // Low priority
+    senders[0].setPriority(20);
     sendOne(senders[0], DATA[0], TX_DEADLINE, 0, uavcan::TransferTypeMessageBroadcast, 0);
-    sendOne(senders[0], DATA[1], TX_DEADLINE, 0, uavcan::TransferTypeMessageUnicast,   RX_NODE_ID);
+    sendOne(senders[0], DATA[1], TX_DEADLINE, 0, uavcan::TransferTypeMessageBroadcast, 0);
+    // High priority
+    senders[0].setPriority(10);
     sendOne(senders[0], "123",   TX_DEADLINE, 0, uavcan::TransferTypeMessageBroadcast, 0);
-    sendOne(senders[0], "456",   TX_DEADLINE, 0, uavcan::TransferTypeMessageUnicast,   RX_NODE_ID);
+    sendOne(senders[0], "456",   TX_DEADLINE, 0, uavcan::TransferTypeMessageBroadcast, 0);
 
+    senders[1].setPriority(15);
     sendOne(senders[1], DATA[2], TX_DEADLINE, 0, uavcan::TransferTypeServiceRequest,  RX_NODE_ID);
     sendOne(senders[1], DATA[3], TX_DEADLINE, 0, uavcan::TransferTypeServiceResponse, RX_NODE_ID, 1);
     sendOne(senders[1], "",      TX_DEADLINE, 0, uavcan::TransferTypeServiceRequest,  RX_NODE_ID);
     sendOne(senders[1], "",      TX_DEADLINE, 0, uavcan::TransferTypeServiceResponse, RX_NODE_ID, 2);
 
+    using namespace uavcan;
     static const Transfer TRANSFERS[8] =
     {
-        Transfer(TX_DEADLINE, 0, uavcan::TransferTypeMessageBroadcast, 0, TX_NODE_ID, 0,          DATA[0], TYPES[0]),
-        Transfer(TX_DEADLINE, 0, uavcan::TransferTypeMessageUnicast,   0, TX_NODE_ID, RX_NODE_ID, DATA[1], TYPES[0]),
-        Transfer(TX_DEADLINE, 0, uavcan::TransferTypeMessageBroadcast, 1, TX_NODE_ID, 0,          "123",   TYPES[0]),
-        Transfer(TX_DEADLINE, 0, uavcan::TransferTypeMessageUnicast,   1, TX_NODE_ID, RX_NODE_ID, "456",   TYPES[0]),
+        Transfer(TX_DEADLINE, 0, 20, TransferTypeMessageBroadcast, 0, TX_NODE_ID, 0, DATA[0], TYPES[0]),
+        Transfer(TX_DEADLINE, 0, 20, TransferTypeMessageBroadcast, 1, TX_NODE_ID, 0, DATA[1], TYPES[0]),
+        Transfer(TX_DEADLINE, 0, 10, TransferTypeMessageBroadcast, 2, TX_NODE_ID, 0, "123",   TYPES[0]),
+        Transfer(TX_DEADLINE, 0, 10, TransferTypeMessageBroadcast, 3, TX_NODE_ID, 0, "456",   TYPES[0]),
 
-        Transfer(TX_DEADLINE, 0, uavcan::TransferTypeServiceRequest,   0, TX_NODE_ID, RX_NODE_ID, DATA[2], TYPES[1]),
-        Transfer(TX_DEADLINE, 0, uavcan::TransferTypeServiceResponse,  1, TX_NODE_ID, RX_NODE_ID, DATA[3], TYPES[1]),
-        Transfer(TX_DEADLINE, 0, uavcan::TransferTypeServiceRequest,   1, TX_NODE_ID, RX_NODE_ID, "",      TYPES[1]),
-        Transfer(TX_DEADLINE, 0, uavcan::TransferTypeServiceResponse,  2, TX_NODE_ID, RX_NODE_ID, "",      TYPES[1])
+        Transfer(TX_DEADLINE, 0, 15, TransferTypeServiceRequest,   0, TX_NODE_ID, RX_NODE_ID, DATA[2], TYPES[1]),
+        Transfer(TX_DEADLINE, 0, 15, TransferTypeServiceResponse,  1, TX_NODE_ID, RX_NODE_ID, DATA[3], TYPES[1]),
+        Transfer(TX_DEADLINE, 0, 15, TransferTypeServiceRequest,   1, TX_NODE_ID, RX_NODE_ID, "",      TYPES[1]),
+        Transfer(TX_DEADLINE, 0, 15, TransferTypeServiceResponse,  2, TX_NODE_ID, RX_NODE_ID, "",      TYPES[1])
     };
+
+    /*
+     * Making sure that the abort flag is not used.
+     */
+    ASSERT_EQ(0, driver.ifaces.at(0).tx.front().flags);
 
     /*
      * Receiving on the other side.
@@ -113,9 +121,9 @@ TEST(TransferSender, Basic)
         }
     }
 
-    TestListener<512, 2, 2> sub_msg(dispatcher_rx.getTransferPerfCounter(),      TYPES[0], poolmgr);
-    TestListener<512, 2, 2> sub_srv_req(dispatcher_rx.getTransferPerfCounter(),  TYPES[1], poolmgr);
-    TestListener<512, 2, 2> sub_srv_resp(dispatcher_rx.getTransferPerfCounter(), TYPES[1], poolmgr);
+    TestListener sub_msg(dispatcher_rx.getTransferPerfCounter(),      TYPES[0], 512, poolmgr);
+    TestListener sub_srv_req(dispatcher_rx.getTransferPerfCounter(),  TYPES[1], 512, poolmgr);
+    TestListener sub_srv_resp(dispatcher_rx.getTransferPerfCounter(), TYPES[1], 512, poolmgr);
 
     dispatcher_rx.registerMessageListener(&sub_msg);
     dispatcher_rx.registerServiceRequestListener(&sub_srv_req);
@@ -180,15 +188,13 @@ struct TransferSenderTestLoopbackFrameListener : public uavcan::LoopbackFrameLis
 
 TEST(TransferSender, Loopback)
 {
-    uavcan::PoolManager<1> poolmgr;
+    uavcan::PoolAllocator<uavcan::MemPoolBlockSize * 100, uavcan::MemPoolBlockSize> poolmgr;
 
     SystemClockMock clockmock(100);
     CanDriverMock driver(2, clockmock);
 
-    uavcan::OutgoingTransferRegistry<8> out_trans_reg(poolmgr);
-
     static const uavcan::NodeID TX_NODE_ID(64);
-    uavcan::Dispatcher dispatcher(driver, poolmgr, clockmock, out_trans_reg);
+    uavcan::Dispatcher dispatcher(driver, poolmgr, clockmock);
     ASSERT_TRUE(dispatcher.setNodeID(TX_NODE_ID));
 
     uavcan::DataTypeDescriptor desc = makeDataType(uavcan::DataTypeKindMessage, 1, "Foobar");
@@ -212,7 +218,7 @@ TEST(TransferSender, Loopback)
     ASSERT_EQ(1, listener.last_frame.getIfaceIndex());
     ASSERT_EQ(3, listener.last_frame.getPayloadLen());
     ASSERT_TRUE(TX_NODE_ID == listener.last_frame.getSrcNodeID());
-    ASSERT_TRUE(listener.last_frame.isLast());
+    ASSERT_TRUE(listener.last_frame.isEndOfTransfer());
 
     EXPECT_EQ(0, dispatcher.getTransferPerfCounter().getErrorCount());
     EXPECT_EQ(1, dispatcher.getTransferPerfCounter().getTxTransferCount());
@@ -221,25 +227,40 @@ TEST(TransferSender, Loopback)
 
 TEST(TransferSender, PassiveMode)
 {
-    uavcan::PoolManager<1> poolmgr;
+    uavcan::PoolAllocator<uavcan::MemPoolBlockSize * 100, uavcan::MemPoolBlockSize> poolmgr;
 
     SystemClockMock clockmock(100);
     CanDriverMock driver(2, clockmock);
 
-    uavcan::OutgoingTransferRegistry<8> out_trans_reg(poolmgr);
-
-    uavcan::Dispatcher dispatcher(driver, poolmgr, clockmock, out_trans_reg);
+    uavcan::Dispatcher dispatcher(driver, poolmgr, clockmock);
 
     uavcan::TransferSender sender(dispatcher, makeDataType(uavcan::DataTypeKindMessage, 123),
                                   uavcan::CanTxQueue::Volatile);
 
     static const uint8_t Payload[] = {1, 2, 3, 4, 5};
 
+    // By default, sending in passive mode is not enabled
     ASSERT_EQ(-uavcan::ErrPassiveMode,
               sender.send(Payload, sizeof(Payload), tsMono(1000), uavcan::MonotonicTime(),
                           uavcan::TransferTypeMessageBroadcast, uavcan::NodeID::Broadcast));
 
+    // Overriding the default
+    sender.allowAnonymousTransfers();
+
+    // OK, now we can broadcast in any mode
+    ASSERT_LE(0, sender.send(Payload, sizeof(Payload), tsMono(1000), uavcan::MonotonicTime(),
+                             uavcan::TransferTypeMessageBroadcast, uavcan::NodeID::Broadcast));
+
+    // ...but not unicast or anything else
+    ASSERT_EQ(-uavcan::ErrPassiveMode,
+              sender.send(Payload, sizeof(Payload), tsMono(1000), uavcan::MonotonicTime(),
+                          uavcan::TransferTypeServiceRequest, uavcan::NodeID(42)));
+
+    // Making sure the abort flag is set
+    ASSERT_FALSE(driver.ifaces.at(0).tx.empty());
+    ASSERT_EQ(uavcan::CanIOFlagAbortOnError, driver.ifaces.at(0).tx.front().flags);
+
     EXPECT_EQ(0, dispatcher.getTransferPerfCounter().getErrorCount());
-    EXPECT_EQ(0, dispatcher.getTransferPerfCounter().getTxTransferCount());
+    EXPECT_EQ(1, dispatcher.getTransferPerfCounter().getTxTransferCount());
     EXPECT_EQ(0, dispatcher.getTransferPerfCounter().getRxTransferCount());
 }

@@ -10,25 +10,52 @@
 namespace uavcan
 {
 
-void TransferSender::registerError()
+void TransferSender::registerError() const
 {
     dispatcher_.getTransferPerfCounter().addError();
 }
 
+void TransferSender::init(const DataTypeDescriptor& dtid, CanTxQueue::Qos qos)
+{
+    UAVCAN_ASSERT(!isInitialized());
+
+    qos_          = qos;
+    data_type_id_ = dtid.getID();
+    crc_base_     = dtid.getSignature().toTransferCRC();
+}
+
 int TransferSender::send(const uint8_t* payload, unsigned payload_len, MonotonicTime tx_deadline,
                          MonotonicTime blocking_deadline, TransferType transfer_type, NodeID dst_node_id,
-                         TransferID tid)
+                         TransferID tid) const
 {
+    Frame frame(data_type_id_, transfer_type, dispatcher_.getNodeID(), dst_node_id, tid);
+
+    frame.setPriority(priority_);
+    frame.setStartOfTransfer(true);
+
+    UAVCAN_TRACE("TransferSender", "%s", frame.toString().c_str());
+
+    /*
+     * Checking if we're allowed to send.
+     * In passive mode we can send only anonymous transfers, if they are enabled.
+     */
     if (dispatcher_.isPassiveMode())
     {
-        return -ErrPassiveMode;
+        const bool allow = allow_anonymous_transfers_ &&
+                           (transfer_type == TransferTypeMessageBroadcast) &&
+                           (int(payload_len) <= frame.getPayloadCapacity());
+        if (!allow)
+        {
+            return -ErrPassiveMode;
+        }
     }
 
     dispatcher_.getTransferPerfCounter().addTxTransfer();
 
-    Frame frame(data_type_.getID(), transfer_type, dispatcher_.getNodeID(), dst_node_id, 0, tid);
-
-    if (frame.getMaxPayloadLen() >= int(payload_len))           // Single Frame Transfer
+    /*
+     * Sending frames
+     */
+    if (frame.getPayloadCapacity() >= payload_len)           // Single Frame Transfer
     {
         const int res = frame.setPayload(payload, payload_len);
         if (res != int(payload_len))
@@ -38,12 +65,19 @@ int TransferSender::send(const uint8_t* payload, unsigned payload_len, Monotonic
             registerError();
             return (res < 0) ? res : -ErrLogic;
         }
-        frame.makeLast();
-        UAVCAN_ASSERT(frame.isLast() && frame.isFirst());
-        return dispatcher_.send(frame, tx_deadline, blocking_deadline, qos_, flags_, iface_mask_);
+
+        frame.setEndOfTransfer(true);
+        UAVCAN_ASSERT(frame.isStartOfTransfer() && frame.isEndOfTransfer() && !frame.getToggle());
+
+        const CanIOFlags flags = frame.getSrcNodeID().isUnicast() ? flags_ : (flags_ | CanIOFlagAbortOnError);
+
+        return dispatcher_.send(frame, tx_deadline, blocking_deadline, qos_, flags, iface_mask_);
     }
     else                                                   // Multi Frame Transfer
     {
+        UAVCAN_ASSERT(!dispatcher_.isPassiveMode());
+        UAVCAN_ASSERT(frame.getSrcNodeID().isUnicast());
+
         int offset = 0;
         {
             TransferCRC crc = crc_base_;
@@ -67,7 +101,7 @@ int TransferSender::send(const uint8_t* payload, unsigned payload_len, Monotonic
             UAVCAN_ASSERT(int(payload_len) > offset);
         }
 
-        int next_frame_index = 1;
+        int num_sent = 0;
 
         while (true)
         {
@@ -78,11 +112,14 @@ int TransferSender::send(const uint8_t* payload, unsigned payload_len, Monotonic
                 return send_res;
             }
 
-            if (frame.isLast())
+            num_sent++;
+            if (frame.isEndOfTransfer())
             {
-                return next_frame_index;  // Number of frames transmitted
+                return num_sent;  // Number of frames transmitted
             }
-            frame.setIndex(next_frame_index++);
+
+            frame.setStartOfTransfer(false);
+            frame.flipToggle();
 
             UAVCAN_ASSERT(offset >= 0);
             const int write_res = frame.setPayload(payload + offset, payload_len - unsigned(offset));
@@ -97,7 +134,7 @@ int TransferSender::send(const uint8_t* payload, unsigned payload_len, Monotonic
             UAVCAN_ASSERT(offset <= int(payload_len));
             if (offset >= int(payload_len))
             {
-                frame.makeLast();
+                frame.setEndOfTransfer(true);
             }
         }
     }
@@ -107,18 +144,22 @@ int TransferSender::send(const uint8_t* payload, unsigned payload_len, Monotonic
 }
 
 int TransferSender::send(const uint8_t* payload, unsigned payload_len, MonotonicTime tx_deadline,
-                         MonotonicTime blocking_deadline, TransferType transfer_type, NodeID dst_node_id)
+                         MonotonicTime blocking_deadline, TransferType transfer_type, NodeID dst_node_id) const
 {
-    const OutgoingTransferRegistryKey otr_key(data_type_.getID(), transfer_type, dst_node_id);
+    /*
+     * TODO: TID is not needed for anonymous transfers, this part of the code can be skipped?
+     */
+    const OutgoingTransferRegistryKey otr_key(data_type_id_, transfer_type, dst_node_id);
 
     UAVCAN_ASSERT(!tx_deadline.isZero());
-    const MonotonicTime otr_deadline = tx_deadline + max_transfer_interval_;
+    const MonotonicTime otr_deadline = tx_deadline + max(max_transfer_interval_ * 2,
+                                                         OutgoingTransferRegistry::MinEntryLifetime);
 
     TransferID* const tid = dispatcher_.getOutgoingTransferRegistry().accessOrCreate(otr_key, otr_deadline);
-    if (tid == NULL)
+    if (tid == UAVCAN_NULLPTR)
     {
-        UAVCAN_TRACE("TransferSender", "OTR access failure, dtd=%s tt=%i",
-                     data_type_.toString().c_str(), int(transfer_type));
+        UAVCAN_TRACE("TransferSender", "OTR access failure, dtid=%d tt=%i",
+                     int(data_type_id_.get()), int(transfer_type));
         return -ErrMemory;
     }
 

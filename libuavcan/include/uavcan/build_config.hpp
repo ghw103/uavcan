@@ -2,13 +2,14 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_BUILD_CONFIG_HPP_INCLUDED
+#define UAVCAN_BUILD_CONFIG_HPP_INCLUDED
 
 /**
  * UAVCAN version definition
  */
-#define UAVCAN_VERSION_MAJOR    0
-#define UAVCAN_VERSION_MINOR    1
+#define UAVCAN_VERSION_MAJOR    1
+#define UAVCAN_VERSION_MINOR    0
 
 /**
  * UAVCAN_CPP_VERSION - version of the C++ standard used during compilation.
@@ -29,11 +30,38 @@
 
 #ifndef UAVCAN_CPP_VERSION
 # if __cplusplus > 201200
-#  error Unsupported C++ standard
+#  error Unsupported C++ standard. You can explicitly set UAVCAN_CPP_VERSION=UAVCAN_CPP11 to silence this error.
 # elif (__cplusplus > 201100) || defined(__GXX_EXPERIMENTAL_CXX0X__)
 #  define UAVCAN_CPP_VERSION    UAVCAN_CPP11
 # else
 #  define UAVCAN_CPP_VERSION    UAVCAN_CPP03
+# endif
+#endif
+
+/**
+ * The library uses UAVCAN_NULLPTR instead of UAVCAN_NULLPTR and nullptr in order to allow the use of
+ * -Wzero-as-null-pointer-constant.
+ */
+#ifndef UAVCAN_NULLPTR
+# if UAVCAN_CPP_VERSION >= UAVCAN_CPP11
+#  define UAVCAN_NULLPTR nullptr
+# else
+#  define UAVCAN_NULLPTR NULL
+# endif
+#endif
+
+/**
+ * By default, libuavcan enables all features if it detects that it is being built for a general-purpose
+ * target like Linux. Value of this macro influences other configuration options located below in this file.
+ * This macro can be overriden if needed.
+ */
+#ifndef UAVCAN_GENERAL_PURPOSE_PLATFORM
+# if (defined(__linux__)    || defined(__linux)     || defined(__APPLE__)   ||\
+      defined(_WIN64)       || defined(_WIN32)      || defined(__ANDROID__) ||\
+      defined(_SYSTYPE_BSD) || defined(__FreeBSD__))
+#  define UAVCAN_GENERAL_PURPOSE_PLATFORM 1
+# else
+#  define UAVCAN_GENERAL_PURPOSE_PLATFORM 0
 # endif
 #endif
 
@@ -46,16 +74,12 @@
 #endif
 
 /**
- * UAVCAN can be explicitly told to ignore exceptions, or it can be detected automatically.
- * Autodetection is not expected to work with all compilers, so it's safer to define it explicitly.
- * If the autodetection fails, exceptions will be disabled by default.
+ * This option allows to select whether libuavcan should throw exceptions on fatal errors, or try to handle
+ * errors differently. By default, exceptions will be enabled only if the library is built for a general-purpose
+ * OS like Linux. Set UAVCAN_EXCEPTIONS explicitly to override.
  */
 #ifndef UAVCAN_EXCEPTIONS
-# if defined(__EXCEPTIONS) || defined(_HAS_EXCEPTIONS)
-#  define UAVCAN_EXCEPTIONS  1
-# else
-#  define UAVCAN_EXCEPTIONS  0
-# endif
+# define UAVCAN_EXCEPTIONS UAVCAN_GENERAL_PURPOSE_PLATFORM
 #endif
 
 /**
@@ -72,21 +96,6 @@
 # else
 #  define UAVCAN_NOEXCEPT
 # endif
-#endif
-
-/**
- * Struct layout control.
- * Set UAVCAN_PACK_STRUCTS=1 and define UAVCAN_PACKED_BEGIN and UAVCAN_PACKED_END to reduce memory usage.
- * THIS MAY BREAK THE CODE.
- */
-#ifndef UAVCAN_PACK_STRUCTS
-# define UAVCAN_PACK_STRUCTS    0
-#endif
-#ifndef UAVCAN_PACKED_BEGIN
-# define UAVCAN_PACKED_BEGIN
-#endif
-#ifndef UAVCAN_PACKED_END
-# define UAVCAN_PACKED_END
 #endif
 
 /**
@@ -108,21 +117,29 @@
 #endif
 
 /**
- * It might make sense to remove toString() methods for an embedded system.
- * If the autodetect fails, toString() will be disabled, so it's pretty safe by default.
+ * Disable the global data type registry, which can save some space on embedded systems.
+ */
+#ifndef UAVCAN_NO_GLOBAL_DATA_TYPE_REGISTRY
+# define UAVCAN_NO_GLOBAL_DATA_TYPE_REGISTRY 0
+#endif
+
+/**
+ * toString() methods will be disabled by default, unless the library is built for a general-purpose target like Linux.
+ * It is not recommended to enable toString() on embedded targets as code size will explode.
  */
 #ifndef UAVCAN_TOSTRING
-// Objective is to make sure that we're NOT on a resource constrained platform
-# if defined(__linux__) || defined(__linux) || defined(__APPLE__) || defined(_WIN64) || defined(_WIN32)
-#  define UAVCAN_TOSTRING 1
+# if UAVCAN_EXCEPTIONS
+#  define UAVCAN_TOSTRING UAVCAN_GENERAL_PURPOSE_PLATFORM
 # else
 #  define UAVCAN_TOSTRING 0
 # endif
 #endif
 
 #if UAVCAN_TOSTRING
+# if !UAVCAN_EXCEPTIONS
+#  error UAVCAN_TOSTRING requires UAVCAN_EXCEPTIONS
+# endif
 # include <string>
-# include <cstdio>
 #endif
 
 /**
@@ -132,6 +149,22 @@
  */
 #ifndef UAVCAN_IMPLEMENT_PLACEMENT_NEW
 # define UAVCAN_IMPLEMENT_PLACEMENT_NEW 0
+#endif
+
+/**
+ * Allows the user's application to provide custom implementation of uavcan::snprintf(),
+ * which is often useful on deeply embedded systems.
+ */
+#ifndef UAVCAN_USE_EXTERNAL_SNPRINTF
+# define UAVCAN_USE_EXTERNAL_SNPRINTF   0
+#endif
+
+/**
+ * Allows the user's application to provide a custom implementation of IEEE754Converter::nativeIeeeToHalf and
+ * IEEE754Converter::halfToNativeIeee.
+ */
+#ifndef UAVCAN_USE_EXTERNAL_FLOAT16_CONVERSION
+# define UAVCAN_USE_EXTERNAL_FLOAT16_CONVERSION 0
 #endif
 
 /**
@@ -147,6 +180,22 @@
 #  define UAVCAN_ASSERT(x)
 # else
 #  define UAVCAN_ASSERT(x) assert(x)
+# endif
+#endif
+
+#ifndef UAVCAN_LIKELY
+# if __GNUC__
+#  define UAVCAN_LIKELY(x) __builtin_expect(!!(x), true)
+# else
+#  define UAVCAN_LIKELY(x) (x)
+# endif
+#endif
+
+#ifndef UAVCAN_UNLIKELY
+# if __GNUC__
+#  define UAVCAN_UNLIKELY(x) __builtin_expect(!!(x), false)
+# else
+#  define UAVCAN_UNLIKELY(x) (x)
 # endif
 #endif
 
@@ -211,4 +260,17 @@ static const unsigned FloatComparisonEpsilonMult = UAVCAN_FLOAT_COMPARISON_EPSIL
 static const unsigned FloatComparisonEpsilonMult = 10;
 #endif
 
+/**
+ * Maximum number of CAN acceptance filters available on the platform
+ */
+#ifdef UAVCAN_MAX_CAN_ACCEPTANCE_FILTERS
+/// Explicitly specified by the user.
+static const unsigned MaxCanAcceptanceFilters = UAVCAN_MAX_CAN_ACCEPTANCE_FILTERS;
+#else
+/// Default that should be OK for any platform.
+static const unsigned MaxCanAcceptanceFilters = 32;
+#endif
+
 }
+
+#endif // UAVCAN_BUILD_CONFIG_HPP_INCLUDED

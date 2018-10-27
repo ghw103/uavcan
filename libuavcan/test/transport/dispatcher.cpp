@@ -3,6 +3,7 @@
  */
 
 #include <memory>
+#include <vector>
 #include <gtest/gtest.h>
 #include "transfer_test_helpers.hpp"
 #include "can/can.hpp"
@@ -31,26 +32,46 @@ public:
 };
 
 
+struct RxFrameListener : public uavcan::IRxFrameListener
+{
+    std::vector<uavcan::CanRxFrame> rx_frames;
+
+    virtual void handleRxFrame(const uavcan::CanRxFrame& frame, uavcan::CanIOFlags flags)
+    {
+        std::cout << "RX frame [flags=" << flags << "]: " << frame.toString() << std::endl;
+        if ((flags & uavcan::CanIOFlagLoopback) == 0)
+        {
+            rx_frames.push_back(frame);
+        }
+    }
+};
+
+
 static const uavcan::NodeID SELF_NODE_ID(64);
 
 
 TEST(Dispatcher, Reception)
 {
-    uavcan::PoolAllocator<uavcan::MemPoolBlockSize * 8, uavcan::MemPoolBlockSize> pool;
-    uavcan::PoolManager<1> poolmgr;
-    poolmgr.addPool(&pool);
+    uavcan::PoolAllocator<uavcan::MemPoolBlockSize * 100, uavcan::MemPoolBlockSize> pool;
 
     SystemClockMock clockmock(100);
     CanDriverMock driver(2, clockmock);
 
-    uavcan::OutgoingTransferRegistry<8> out_trans_reg(poolmgr);
-
-    uavcan::Dispatcher dispatcher(driver, poolmgr, clockmock, out_trans_reg);
+    uavcan::Dispatcher dispatcher(driver, pool, clockmock);
     ASSERT_TRUE(dispatcher.setNodeID(SELF_NODE_ID));  // Can be set only once
     ASSERT_FALSE(dispatcher.setNodeID(SELF_NODE_ID));
     ASSERT_EQ(SELF_NODE_ID, dispatcher.getNodeID());
 
     DispatcherTransferEmulator emulator(driver, SELF_NODE_ID);
+
+    /*
+     * RX listener
+     */
+    RxFrameListener rx_listener;
+    ASSERT_FALSE(dispatcher.getRxFrameListener());
+    dispatcher.installRxFrameListener(&rx_listener);
+    ASSERT_TRUE(dispatcher.getRxFrameListener());
+    ASSERT_TRUE(rx_listener.rx_frames.empty());
 
     /*
      * Test environment
@@ -63,17 +84,17 @@ TEST(Dispatcher, Reception)
         makeDataType(uavcan::DataTypeKindService, 1)
     };
 
-    typedef TestListener<512, 2, 2> Subscriber;
-    typedef std::auto_ptr<Subscriber> SubscriberPtr;
-    static const int NUM_SUBSCRIBERS = 6;
-    SubscriberPtr subscribers[NUM_SUBSCRIBERS] =
+    typedef std::auto_ptr<TestListener> TestListenerPtr;
+    static const int MaxBufSize = 512;
+    static const int NumSubscribers = 6;
+    TestListenerPtr subscribers[NumSubscribers] =
     {
-        SubscriberPtr(new Subscriber(dispatcher.getTransferPerfCounter(), TYPES[0], poolmgr)), // msg
-        SubscriberPtr(new Subscriber(dispatcher.getTransferPerfCounter(), TYPES[0], poolmgr)), // msg // Two similar
-        SubscriberPtr(new Subscriber(dispatcher.getTransferPerfCounter(), TYPES[1], poolmgr)), // msg
-        SubscriberPtr(new Subscriber(dispatcher.getTransferPerfCounter(), TYPES[2], poolmgr)), // srv
-        SubscriberPtr(new Subscriber(dispatcher.getTransferPerfCounter(), TYPES[3], poolmgr)), // srv
-        SubscriberPtr(new Subscriber(dispatcher.getTransferPerfCounter(), TYPES[3], poolmgr))  // srv // Repeat again
+        TestListenerPtr(new TestListener(dispatcher.getTransferPerfCounter(), TYPES[0], MaxBufSize, pool)), // msg
+        TestListenerPtr(new TestListener(dispatcher.getTransferPerfCounter(), TYPES[0], MaxBufSize, pool)), // msg // Two similar
+        TestListenerPtr(new TestListener(dispatcher.getTransferPerfCounter(), TYPES[1], MaxBufSize, pool)), // msg
+        TestListenerPtr(new TestListener(dispatcher.getTransferPerfCounter(), TYPES[2], MaxBufSize, pool)), // srv
+        TestListenerPtr(new TestListener(dispatcher.getTransferPerfCounter(), TYPES[3], MaxBufSize, pool)), // srv
+        TestListenerPtr(new TestListener(dispatcher.getTransferPerfCounter(), TYPES[3], MaxBufSize, pool))  // srv // Repeat again
     };
 
     static const std::string DATA[6] =
@@ -85,7 +106,7 @@ TEST(Dispatcher, Reception)
         "And all because he writes down what I said incorrectly.",
 
         "I had the pleasure of meeting that young man at the Patriarch's Ponds. "
-        "He almost drove me mad myself, proving to me that I don't exist.",
+        "He almost drove me mad myself, proving to me that I don't exist. But you do believe that it is really I?",
 
         "He was a dreamer, a thinker, a speculative philosopher... or, as his wife would have it, an idiot.",
 
@@ -95,24 +116,28 @@ TEST(Dispatcher, Reception)
         ""
     };
 
-    const Transfer transfers[9] =
+    for (unsigned i = 0; i < sizeof(DATA) / sizeof(DATA[0]); i++)
     {
-        emulator.makeTransfer(uavcan::TransferTypeMessageBroadcast, 10, DATA[0], TYPES[0]),
-        emulator.makeTransfer(uavcan::TransferTypeMessageUnicast,   11, DATA[1], TYPES[1]),
-        emulator.makeTransfer(uavcan::TransferTypeServiceRequest,   12, DATA[2], TYPES[2]),
-        emulator.makeTransfer(uavcan::TransferTypeServiceResponse,  13, DATA[3], TYPES[3]),
-        emulator.makeTransfer(uavcan::TransferTypeMessageUnicast,   14, DATA[4], TYPES[0]),
-        emulator.makeTransfer(uavcan::TransferTypeMessageBroadcast, 15, DATA[5], TYPES[1]),
+        std::cout << "Size of test data chunk " << i << ": " << DATA[i].length() << std::endl;
+    }
+
+    const Transfer transfers[8] =
+    {
+        emulator.makeTransfer(0,  uavcan::TransferTypeMessageBroadcast, 10, DATA[0], TYPES[0]),
+        emulator.makeTransfer(5,  uavcan::TransferTypeMessageBroadcast, 11, DATA[1], TYPES[1]),
+        emulator.makeTransfer(10, uavcan::TransferTypeServiceRequest,   12, DATA[2], TYPES[2]),
+        emulator.makeTransfer(15, uavcan::TransferTypeServiceResponse,  13, DATA[4], TYPES[3]),
+        emulator.makeTransfer(20, uavcan::TransferTypeMessageBroadcast, 14, DATA[3], TYPES[0]),
+        emulator.makeTransfer(25, uavcan::TransferTypeMessageBroadcast, 15, DATA[5], TYPES[1]),
         // Wrongly addressed:
-        emulator.makeTransfer(uavcan::TransferTypeServiceResponse,  10, DATA[0], TYPES[3], 100),
-        emulator.makeTransfer(uavcan::TransferTypeServiceRequest,   11, DATA[1], TYPES[2], 101),
-        emulator.makeTransfer(uavcan::TransferTypeMessageUnicast,   12, DATA[2], TYPES[1], 102)
+        emulator.makeTransfer(29, uavcan::TransferTypeServiceResponse,  10, DATA[0], TYPES[3], 100),
+        emulator.makeTransfer(31, uavcan::TransferTypeServiceRequest,   11, DATA[4], TYPES[2], 101)
     };
 
     /*
      * Registration
      */
-    for (int i = 0; i < NUM_SUBSCRIBERS; i++)
+    for (int i = 0; i < NumSubscribers; i++)
     {
         ASSERT_FALSE(dispatcher.hasSubscriber(subscribers[i]->getDataTypeDescriptor().getID()));
         ASSERT_FALSE(dispatcher.hasPublisher(subscribers[i]->getDataTypeDescriptor().getID()));
@@ -126,7 +151,7 @@ TEST(Dispatcher, Reception)
     ASSERT_TRUE(dispatcher.registerServiceResponseListener(subscribers[4].get()));
     ASSERT_TRUE(dispatcher.registerServiceResponseListener(subscribers[5].get()));
 
-    for (int i = 0; i < NUM_SUBSCRIBERS; i++)
+    for (int i = 0; i < NumSubscribers; i++)
     {
         ASSERT_FALSE(dispatcher.hasPublisher(subscribers[i]->getDataTypeDescriptor().getID()));
     }
@@ -150,7 +175,7 @@ TEST(Dispatcher, Reception)
     ASSERT_EQ(1, dispatcher.getNumServiceRequestListeners());
     ASSERT_EQ(2, dispatcher.getNumServiceResponseListeners());
 
-    for (int i = 0; i < NUM_SUBSCRIBERS; i++)
+    for (int i = 0; i < NumSubscribers; i++)
     {
         ASSERT_TRUE(subscribers[i]->isEmpty());
     }
@@ -160,7 +185,7 @@ TEST(Dispatcher, Reception)
 
     while (true)
     {
-        const int res = dispatcher.spin(tsMono(0));
+        const int res = dispatcher.spinOnce();
         ASSERT_LE(0, res);
         clockmock.advance(100);
         if (res == 0)
@@ -171,19 +196,12 @@ TEST(Dispatcher, Reception)
 
     /*
      * Matching.
-     * Expected reception order per subsciber:
-     * 0: 0, 4
-     * 1: 0, 4
-     * 2: 5, 1
-     * 3: 2
-     * 4: 3
-     * 5: 3
      */
-    ASSERT_TRUE(subscribers[0]->matchAndPop(transfers[0]));
     ASSERT_TRUE(subscribers[0]->matchAndPop(transfers[4]));
+    ASSERT_TRUE(subscribers[0]->matchAndPop(transfers[0]));
 
-    ASSERT_TRUE(subscribers[1]->matchAndPop(transfers[0]));
     ASSERT_TRUE(subscribers[1]->matchAndPop(transfers[4]));
+    ASSERT_TRUE(subscribers[1]->matchAndPop(transfers[0]));
 
     ASSERT_TRUE(subscribers[2]->matchAndPop(transfers[5]));
     ASSERT_TRUE(subscribers[2]->matchAndPop(transfers[1]));
@@ -194,7 +212,7 @@ TEST(Dispatcher, Reception)
 
     ASSERT_TRUE(subscribers[5]->matchAndPop(transfers[3]));
 
-    for (int i = 0; i < NUM_SUBSCRIBERS; i++)
+    for (int i = 0; i < NumSubscribers; i++)
     {
         ASSERT_TRUE(subscribers[i]->isEmpty());
     }
@@ -219,23 +237,31 @@ TEST(Dispatcher, Reception)
     EXPECT_LT(0, dispatcher.getTransferPerfCounter().getErrorCount());   // Repeated transfers
     EXPECT_EQ(0, dispatcher.getTransferPerfCounter().getTxTransferCount());
     EXPECT_EQ(9, dispatcher.getTransferPerfCounter().getRxTransferCount());
+
+    /*
+     * RX listener
+     */
+    std::cout << "Num received frames: " << rx_listener.rx_frames.size() << std::endl;
+    ASSERT_EQ(292, rx_listener.rx_frames.size());
 }
 
 
 TEST(Dispatcher, Transmission)
 {
     uavcan::PoolAllocator<uavcan::MemPoolBlockSize * 8, uavcan::MemPoolBlockSize> pool;
-    uavcan::PoolManager<1> poolmgr;
-    poolmgr.addPool(&pool);
 
     SystemClockMock clockmock(100);
     CanDriverMock driver(2, clockmock);
 
-    uavcan::OutgoingTransferRegistry<8> out_trans_reg(poolmgr);
-
-    uavcan::Dispatcher dispatcher(driver, poolmgr, clockmock, out_trans_reg);
+    uavcan::Dispatcher dispatcher(driver, pool, clockmock);
     ASSERT_TRUE(dispatcher.setNodeID(SELF_NODE_ID));  // Can be set only once
     ASSERT_FALSE(dispatcher.setNodeID(SELF_NODE_ID));
+
+    /*
+     * RX listener
+     */
+    RxFrameListener rx_listener;
+    dispatcher.installRxFrameListener(&rx_listener);
 
     /*
      * Transmission
@@ -244,13 +270,14 @@ TEST(Dispatcher, Transmission)
 
     // uint_fast16_t data_type_id, TransferType transfer_type, NodeID src_node_id, NodeID dst_node_id,
     // uint_fast8_t frame_index, TransferID transfer_id, bool last_frame = false
-    uavcan::Frame frame(123, uavcan::TransferTypeMessageUnicast, SELF_NODE_ID, 2, 0, 0, true);
+    uavcan::Frame frame(123, uavcan::TransferTypeServiceRequest, SELF_NODE_ID, 2, 0);
     frame.setPayload(reinterpret_cast<const uint8_t*>("123"), 3);
 
     ASSERT_FALSE(dispatcher.hasPublisher(123));
     ASSERT_FALSE(dispatcher.hasPublisher(456));
-    const uavcan::OutgoingTransferRegistryKey otr_key(123, uavcan::TransferTypeMessageUnicast, 2);
-    ASSERT_TRUE(out_trans_reg.accessOrCreate(otr_key, uavcan::MonotonicTime::fromMSec(1000000)));
+    const uavcan::OutgoingTransferRegistryKey otr_key(123, uavcan::TransferTypeMessageBroadcast, 0);
+    ASSERT_TRUE(dispatcher.getOutgoingTransferRegistry().accessOrCreate(otr_key,
+                                                                        uavcan::MonotonicTime::fromMSec(1000000)));
     ASSERT_TRUE(dispatcher.hasPublisher(123));
     ASSERT_FALSE(dispatcher.hasPublisher(456));
 
@@ -274,19 +301,22 @@ TEST(Dispatcher, Transmission)
     EXPECT_EQ(0, dispatcher.getTransferPerfCounter().getErrorCount());
     EXPECT_EQ(0, dispatcher.getTransferPerfCounter().getTxTransferCount());
     EXPECT_EQ(0, dispatcher.getTransferPerfCounter().getRxTransferCount());
+
+    /*
+     * RX listener
+     */
+    ASSERT_TRUE(rx_listener.rx_frames.empty());
 }
 
 
 TEST(Dispatcher, Spin)
 {
-    uavcan::PoolManager<1> poolmgr;
+    NullAllocator poolmgr;
 
     SystemClockMock clockmock(100);
     CanDriverMock driver(2, clockmock);
 
-    uavcan::OutgoingTransferRegistry<8> out_trans_reg(poolmgr);
-
-    uavcan::Dispatcher dispatcher(driver, poolmgr, clockmock, out_trans_reg);
+    uavcan::Dispatcher dispatcher(driver, poolmgr, clockmock);
     ASSERT_TRUE(dispatcher.setNodeID(SELF_NODE_ID));  // Can be set only once
     ASSERT_FALSE(dispatcher.setNodeID(SELF_NODE_ID));
 
@@ -295,7 +325,7 @@ TEST(Dispatcher, Spin)
     ASSERT_EQ(100, clockmock.monotonic);
     ASSERT_EQ(0, dispatcher.spin(tsMono(1000)));
     ASSERT_LE(1000, clockmock.monotonic);
-    ASSERT_EQ(0, dispatcher.spin(tsMono(0)));
+    ASSERT_EQ(0, dispatcher.spinOnce());
     ASSERT_LE(1000, clockmock.monotonic);
     ASSERT_EQ(0, dispatcher.spin(tsMono(1100)));
     ASSERT_LE(1100, clockmock.monotonic);
@@ -325,14 +355,12 @@ struct DispatcherTestLoopbackFrameListener : public uavcan::LoopbackFrameListene
 
 TEST(Dispatcher, Loopback)
 {
-    uavcan::PoolManager<1> poolmgr;
+    NullAllocator poolmgr;
 
     SystemClockMock clockmock(100);
     CanDriverMock driver(2, clockmock);
 
-    uavcan::OutgoingTransferRegistry<8> out_trans_reg(poolmgr);
-
-    uavcan::Dispatcher dispatcher(driver, poolmgr, clockmock, out_trans_reg);
+    uavcan::Dispatcher dispatcher(driver, poolmgr, clockmock);
     ASSERT_TRUE(dispatcher.setNodeID(SELF_NODE_ID));
 
     {
@@ -343,7 +371,7 @@ TEST(Dispatcher, Loopback)
 
         // uint_fast16_t data_type_id, TransferType transfer_type, NodeID src_node_id, NodeID dst_node_id,
         // uint_fast8_t frame_index, TransferID transfer_id, bool last_frame = false
-        uavcan::Frame frame(123, uavcan::TransferTypeMessageUnicast, SELF_NODE_ID, 2, 0, 0, true);
+        uavcan::Frame frame(123, uavcan::TransferTypeServiceResponse, SELF_NODE_ID, 2, 0);
         frame.setPayload(reinterpret_cast<const uint8_t*>("123"), 3);
 
         ASSERT_TRUE(listener.last_frame == uavcan::RxFrame());

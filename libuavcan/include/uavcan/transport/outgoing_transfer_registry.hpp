@@ -2,10 +2,11 @@
  * Copyright (C) 2014 Pavel Kirienko <pavel.kirienko@gmail.com>
  */
 
-#pragma once
+#ifndef UAVCAN_TRANSPORT_OUTGOING_TRANSFER_REGISTRY_HPP_INCLUDED
+#define UAVCAN_TRANSPORT_OUTGOING_TRANSFER_REGISTRY_HPP_INCLUDED
 
 #include <cassert>
-#include <uavcan/stdint.hpp>
+#include <uavcan/std.hpp>
 #include <uavcan/build_config.hpp>
 #include <uavcan/util/map.hpp>
 #include <uavcan/debug.hpp>
@@ -15,7 +16,6 @@
 namespace uavcan
 {
 
-UAVCAN_PACKED_BEGIN
 class UAVCAN_EXPORT OutgoingTransferRegistryKey
 {
     DataTypeID data_type_id_;
@@ -55,33 +55,19 @@ public:
     std::string toString() const;
 #endif
 };
-UAVCAN_PACKED_END
 
 /**
  * Outgoing transfer registry keeps track of Transfer ID values for all currently existing local transfer senders.
  * If a local transfer sender was inactive for a sufficiently long time, the outgoing transfer registry will
  * remove the respective Transfer ID tracking object.
  */
-class UAVCAN_EXPORT IOutgoingTransferRegistry
+class UAVCAN_EXPORT OutgoingTransferRegistry : Noncopyable
 {
-public:
-    virtual ~IOutgoingTransferRegistry() { }
-    virtual TransferID* accessOrCreate(const OutgoingTransferRegistryKey& key, MonotonicTime new_deadline) = 0;
-    virtual bool exists(DataTypeID dtid, TransferType tt) const = 0;
-    virtual void cleanup(MonotonicTime deadline) = 0;
-};
-
-
-template <int NumStaticEntries>
-class UAVCAN_EXPORT OutgoingTransferRegistry : public IOutgoingTransferRegistry, Noncopyable
-{
-    UAVCAN_PACKED_BEGIN
     struct Value
     {
         MonotonicTime deadline;
         TransferID tid;
     };
-    UAVCAN_PACKED_END
 
     class DeadlineExpiredPredicate
     {
@@ -123,54 +109,22 @@ class UAVCAN_EXPORT OutgoingTransferRegistry : public IOutgoingTransferRegistry,
         }
     };
 
-    Map<OutgoingTransferRegistryKey, Value, NumStaticEntries> map_;
+    Map<OutgoingTransferRegistryKey, Value> map_;
 
 public:
+    static const MonotonicDuration MinEntryLifetime;
+
     explicit OutgoingTransferRegistry(IPoolAllocator& allocator)
         : map_(allocator)
     { }
 
-    virtual TransferID* accessOrCreate(const OutgoingTransferRegistryKey& key, MonotonicTime new_deadline);
+    TransferID* accessOrCreate(const OutgoingTransferRegistryKey& key, MonotonicTime new_deadline);
 
-    virtual bool exists(DataTypeID dtid, TransferType tt) const;
+    bool exists(DataTypeID dtid, TransferType tt) const;
 
-    virtual void cleanup(MonotonicTime ts);
+    void cleanup(MonotonicTime ts);
 };
 
-// ----------------------------------------------------------------------------
-
-/*
- * OutgoingTransferRegistry<>
- */
-template <int NumStaticEntries>
-TransferID* OutgoingTransferRegistry<NumStaticEntries>::accessOrCreate(const OutgoingTransferRegistryKey& key,
-                                                                       MonotonicTime new_deadline)
-{
-    UAVCAN_ASSERT(!new_deadline.isZero());
-    Value* p = map_.access(key);
-    if (p == NULL)
-    {
-        p = map_.insert(key, Value());
-        if (p == NULL)
-        {
-            return NULL;
-        }
-        UAVCAN_TRACE("OutgoingTransferRegistry", "Created %s", key.toString().c_str());
-    }
-    p->deadline = new_deadline;
-    return &p->tid;
 }
 
-template <int NumStaticEntries>
-bool OutgoingTransferRegistry<NumStaticEntries>::exists(DataTypeID dtid, TransferType tt) const
-{
-    return NULL != map_.findFirstKey(ExistenceCheckingPredicate(dtid, tt));
-}
-
-template <int NumStaticEntries>
-void OutgoingTransferRegistry<NumStaticEntries>::cleanup(MonotonicTime ts)
-{
-    map_.removeWhere(DeadlineExpiredPredicate(ts));
-}
-
-}
+#endif // UAVCAN_TRANSPORT_OUTGOING_TRANSFER_REGISTRY_HPP_INCLUDED
